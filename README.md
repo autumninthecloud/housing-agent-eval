@@ -1,2 +1,53 @@
 # housing-agent-eval
-A Claude Code playground for evaluating agent architectures on housing safety analytics: single vs multi-agent pipelines, failure-mode analysis (MAST), and a lightweight governance audit mapped to NIST AI RMF.
+
+Experimenting with single- vs multi-agent LLM workflows on housing safety BI tasks, plus a governance audit skill that evaluates cost, reliability, and NIST-aligned controls.
+
+## Project overview
+
+This repo contains a three-phase project:
+
+1. **Phase 1 – Controlled experiment (static NYC data):**
+   Build the same housing-safety BI task twice in Claude Code:
+   - A single-agent pipeline (one agent does everything sequentially).
+   - A multi-agent pipeline (orchestrator + specialist subagents).
+
+   Compare cost, latency, accuracy/spec match, and failure modes using the MAST multi-agent failure taxonomy.
+
+2. **Phase 2 – Live weekly pipeline (NYC data):**
+   Use NYC HPD housing violations and 311 housing complaints via NYC Open Data as a live feed.
+   - A deterministic script pulls new records and recomputes metrics weekly.
+   - A lightweight "insight agent" runs on top to flag anomalies and generate short narratives.
+
+3. **Phase 3 – Governance audit:**
+   A governance-audit skill scores both architectures against agentic gaps in NIST AI RMF (autonomy tiers, tool scoping, delegation logging, override/kill switches), and is wired into a weekly GitHub Action.
+
+## Data
+
+- **Static dataset (Phase 1):** NYC Housing Maintenance Code Violations, filtered to NOVIssuedDate ≥ 2025-01-01 (CSV export, stored under `data/static/`).
+- **Live datasets (Phase 2):**
+  - NYC HPD Housing Violations (NYC Open Data API, incremental weekly pulls).
+  - NYC 311 Housing Complaints (NYC Open Data API).
+
+## Core experiment question
+
+> Which NYC zip codes have the highest concentration of hazardous (Class C) violations issued since January 1, 2025, and are those concentrations increasing or decreasing over that period?
+
+Ranking is based on Class C violations as a percentage of each zip code's total violations; the stacked bar chart shows absolute counts by class (A/B/C) for context. Both the single-agent and multi-agent pipelines answer this using the same static dataset and the same ranking definition, so architecture is the only variable.
+
+## Dashboard components
+
+- Top-10 table: zip codes ranked by Class C violation percentage.
+- Stacked bar chart: x-axis = zip code, y-axis = violation count, stacked by class (A/B/C).
+- Line chart: trend of Class C violation counts over time for the top zip codes.
+
+## Folder structure
+
+- `data/static/` – NYC violations snapshot for the controlled experiment.
+- `data/live/` – NYC violations / 311 data for the weekly pipeline.
+- `.claude/agents/` – Claude Code subagent definitions.
+- `outputs/` – dashboards, charts, and comparison tables.
+
+## Status
+
+Day 1: CLI installed, repo initialized, folder structure created, dataset selected and re-filtered on NOVIssuedDate.
+Next step: build the single-agent pipeline in Claude Code (Phase 1, Day 2).
