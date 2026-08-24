@@ -223,6 +223,18 @@ score above or to `results.md` at all — only `rubric.md`, the files in
 
 **Overall spec-match (AI):** 3 / 4 core outputs fully passing
 
+**Self-scoring session cost (logged separately, per `rubric.md`'s process-metrics
+convention — not part of the pipeline build cost above, and not counted in the
+Cross-architecture comparison table below):** $0.76 / 3m 15s API / 14m 30s wall.
+This includes the cost of the top-level session's protocol-violation
+self-correction (spawning an isolated sub-agent after accidentally reading
+`results.md`) and the independent verification that `visualizer.md` permits all
+10 zips in the trend line — the check that resolved the mistaken "top 6"
+citation elsewhere in this document. Worth noting: verifying the AI's own
+scoring integrity cost more than either half of the original subagent-authoring
+session ($0.3871), which is itself a small data point on the overhead of
+rigorous self-assessment.
+
 **Reasoning for the one Partial:** The Top-10 table's four rubric sub-checks (ranking metric, grouping, math, completeness) all literally pass, but an independent data-quality check found `02018` is not a valid NYC postcode and has n=1, yet ranks #1 by the stated methodology; `10005`/`10006` are legitimate but statistically thin. Downstream agents (visualizer, narrator) both compensated by flagging/deprioritizing it, but the table itself — the actual rubric deliverable — has no such safeguard. Failure mode tag: verification failure (missing plausibility/minimum-N check before finalizing the ranked table).
 
 #### Agreement
