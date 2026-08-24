@@ -60,7 +60,7 @@ output and total wall-clock time.
 | Metric | How to capture |
 |---|---|
 | Cost | `/cost` output immediately after the run, pasted into `results.md` |
-| Latency | Total wall-clock time for the run |
+| Latency | Total wall-clock time for the run *(note: `/cost` reports both "Total duration (API)" and "Total duration (wall)" — wall time includes any time spent sitting on permission prompts. For architecture comparisons, prefer logging API duration alongside wall-clock, since wall-clock is affected by how long you personally took to approve prompts, not by the pipeline itself)* |
 | Failure mode(s) | If any check above is Partial/Fail, tag it using the MAST taxonomy category it best fits (e.g. spec deviation, verification failure, inter-agent misalignment) |
 
 ---
@@ -115,4 +115,5 @@ wording across both architectures.
 **Pipeline cost (build only, captured via `/cost` before any self-scoring):** $___
 **Self-scoring cost (if logged separately):** $___
 **Latency (pipeline build, wall-clock):** ___
+**Latency (pipeline build, API duration — see note in Process metrics table above; prefer this for architecture comparisons):** ___
 **Failure modes observed (MAST-tagged):** ___
