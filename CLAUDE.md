@@ -54,6 +54,54 @@
 
 # 
 
+# \## Model configuration
+
+# 
+
+# For the primary Phase 1 comparison, the model is pinned to `claude-sonnet-5` for
+
+# both architectures, so architecture is the only variable:
+
+# 
+
+# \- Single-agent: launch the session with `claude --model claude-sonnet-5`, or set
+
+#   it once via `/model` before starting the build. Do not let mid-session skill
+
+#   invocations auto-route to a different model.
+
+# \- Multi-agent: every subagent definition in `.claude/agents/` must set
+
+#   `model: sonnet` explicitly in its frontmatter. Do not leave `model` unset or set
+
+#   to `inherit` — both allow auto-routing that reintroduces model choice as an
+
+#   uncontrolled variable.
+
+# 
+
+# A separate sub-experiment (see README.md) tests multi-agent with model routing
+
+# left open. That is intentionally a different, separately logged comparison — do
+
+# not mix its results into the primary architecture comparison.
+
+# 
+
+# \## Archived runs
+
+# 
+
+# `archive/` holds pipeline runs that don't count as official results (e.g. unpinned
+
+# model runs, pre-schema-fix runs). Each subfolder should have its own short README
+
+# explaining why it was archived. Never build on or reference files in `archive/`
+
+# when constructing a new "official" run — always start fresh.
+
+# 
+
 # \## Where to start
 
 # 

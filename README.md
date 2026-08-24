@@ -35,6 +35,17 @@ This repo contains a three-phase project:
 
 Ranking is based on Class C violations as a percentage of each zip code's total violations; the stacked bar chart shows absolute counts by class (A/B/C) for context. Both the single-agent and multi-agent pipelines answer this using the same static dataset and the same ranking definition, so architecture is the only variable.
 
+## Model configuration
+
+The primary single-agent vs. multi-agent comparison pins both to `claude-sonnet-5`,
+so architecture is the only variable — see `CLAUDE.md` for the exact pinning setup.
+
+A secondary sub-experiment holds architecture constant (multi-agent only) and
+varies model selection instead: multi-agent pinned to Sonnet vs. multi-agent left
+free to auto-route per subagent. This tests whether per-task model routing is a
+genuine efficiency advantage of the multi-agent architecture, isolated from the
+primary result rather than folded into it.
+
 ## Dashboard components
 
 - Top-10 table: zip codes ranked by Class C violation percentage.
@@ -47,6 +58,7 @@ Ranking is based on Class C violations as a percentage of each zip code's total 
 - `data/live/` – NYC violations / 311 data for the weekly pipeline.
 - `.claude/agents/` – Claude Code subagent definitions.
 - `outputs/` – dashboards, charts, and comparison tables.
+- `archive/` – discarded or superseded runs kept for reference (e.g. early runs with uncontrolled variables). Not used for official results — see `lessons-learned.md` for why each one was archived.
 
 ## Status
 
