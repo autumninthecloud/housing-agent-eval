@@ -48,9 +48,9 @@
 
 # 
 
-# \- `data/static/` – NYC Housing Maintenance Code Violations, filtered snapshot since 2025-01-01 (use NOVIssuedDate, not InspectionDate).
+# \- `data/static/` – NYC Housing Maintenance Code Violations, filtered snapshot since 2025-01-01 (use NOVIssuedDate, not InspectionDate). Trimmed to 5 columns: ViolationID, Borough, Postcode, Class, NOVIssuedDate. This schema is fixed for Phase 1 only — do not add or remove columns once the single-agent/multi-agent comparison begins, since column count affects the cost/latency metrics being compared.
 
-# \- `data/live/` – NYC HPD violations + 311 complaints (incremental weekly pulls).
+# \- `data/live/` – NYC HPD violations + 311 complaints (incremental weekly pulls). Not subject to the Phase 1 column restriction — Phase 2's insight agent may need additional fields (e.g. status, location) for anomaly flagging and narrative generation.
 
 # 
 

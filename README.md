@@ -23,10 +23,11 @@ This repo contains a three-phase project:
 
 ## Data
 
-- **Static dataset (Phase 1):** NYC Housing Maintenance Code Violations, filtered to NOVIssuedDate ≥ 2025-01-01 (CSV export, stored under `data/static/`).
+- - **Static dataset (Phase 1):** NYC Housing Maintenance Code Violations, filtered to NOVIssuedDate ≥ 2025-01-01 (CSV export, stored under `data/static/`). Columns retained: `ViolationID`, `Borough`, `Postcode`, `Class`, `NOVIssuedDate`. All other source columns (`NOVDescription`, `CurrentStatus`, `CurrentStatusDate`, `ViolationStatus`, `RentImpairing`, `Latitude`, `Longitude`, `NTA`, `NOVID`) were dropped to reduce file size; none are used by the ranking, chart, or trend calculations defined above. This trimmed schema applies only to the Phase 1 static file and must stay fixed for the duration of the single-agent vs. multi-agent comparison — do not modify columns mid-experiment.
 - **Live datasets (Phase 2):**
   - NYC HPD Housing Violations (NYC Open Data API, incremental weekly pulls).
   - NYC 311 Housing Complaints (NYC Open Data API).
+-  Column set is not restricted to the Phase 1 schema — retain whatever fields the insight agent needs for anomaly detection and narrative context (e.g. `ViolationStatus`, `Latitude`/`Longitude`).
 
 ## Core experiment question
 
