@@ -88,6 +88,56 @@
 
 # 
 
+# \## Known pinning exception: skills override session/subagent model pins
+
+# 
+
+# Model pinning (session-level `--model` flag, or a subagent's `model:` frontmatter)
+
+# does not bind skills invoked mid-task. A skill with its own `model:` field in its
+
+# frontmatter can route part of the work to a different model regardless of how the
+
+# session or subagent is pinned. Observed directly: the built-in `/dataviz` skill
+
+# routed a small slice of single-agent Phase 1 work to `claude-haiku-4-5` even with
+
+# the session pinned to `claude-sonnet-5` throughout.
+
+# 
+
+# Decision: do not strip skill access to force artificial purity. Skills are part of
+
+# how Claude Code actually runs by default, and eliminating them would test a
+
+# sanitized setup nobody would use in practice, which defeats the point of exploring
+
+# real Claude Code behavior. Instead: leave skills available to both single-agent
+
+# and multi-agent pipelines equally, and log any resulting model-mix in `/cost`'s
+
+# "Usage by model" breakdown as part of every run's results — do not silently
+
+# average it away. If multi-agent ends up invoking no comparable skill, note that
+
+# asymmetry explicitly in `results.md` rather than treating both runs as equivalent
+
+# by default.
+
+# 
+
+# This is also a live example for the Phase 3 governance-audit skill: a declared
+
+# model-pinning control (this file) with an undocumented enforcement gap (skills
+
+# aren't bound by it) is exactly the kind of tool-scoping/autonomy-tier issue the
+
+# NIST AI RMF-aligned audit is meant to surface. Treat this file's own gap as a test
+
+# case when building that skill, not just a footnote here.
+
+# 
+
 # \## Archived runs
 
 # 

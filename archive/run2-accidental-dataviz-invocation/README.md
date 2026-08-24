@@ -1,0 +1,1 @@
+Run 2: pinned single-agent build, then an accidental /dataviz skill invocation modified the outputs in place. Not used as the official baseline - see lessons-learned.md, Lessons 8-10. Kept for reference (real bug caught, real cost data). 

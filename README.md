@@ -46,6 +46,14 @@ free to auto-route per subagent. This tests whether per-task model routing is a
 genuine efficiency advantage of the multi-agent architecture, isolated from the
 primary result rather than folded into it.
 
+**Verification protocol:** before every run (both architectures), confirm the
+pinned model is actually active by running `/model` in the Claude Code session.
+`/model` is a local CLI command — it reads session config only, makes no API call,
+and adds no cost or latency to the run. This is the standardized check used
+instead of asking Claude to read/summarize CLAUDE.md's model configuration, since
+that alternative would consume tokens and add an inconsistent amount of cost
+depending on how it's phrased each time.
+
 ## Dashboard components
 
 - Top-10 table: zip codes ranked by Class C violation percentage.
