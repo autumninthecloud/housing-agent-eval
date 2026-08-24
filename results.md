@@ -129,20 +129,94 @@ score above is complete.)*
 
 ### Run: Multi-agent, Phase 1, pinned (one-shot)
 
-*(Not yet run — placeholder for when the multi-agent pipeline is built. Same
-one-shot methodology applies: this will be scored from a single run, not an
-average across attempts, for consistency with the single-agent baseline above.)*
+**Date:** Aug 24, '26
+**Architecture:** Multi-agent (orchestrator + `data-cleaner`, `analyst`, `visualizer`, `narrator`, defined in `.claude/agents/`)
+**Model:** `claude-sonnet-5` pinned in every subagent's frontmatter, verified via `/model` before each session; orchestrator session also pinned at launch
+**Skills:** Enabled, same policy as single-agent; `/dataviz` invoked by the visualizer subagent
+
+**Build note — two-session split (structural, not incidental):** creating new
+subagent definitions and having the same session invoke them isn't possible —
+Claude Code only scans `.claude/agents/` at session startup. This forced a
+restart between authoring the four subagent files and running the pipeline,
+splitting the build across two sessions. Unlike single-agent, this cost is
+architectural, not accidental — the split is a genuine property of building a
+multi-agent pipeline this way, not scaffolding to exclude.
+
+**Cost — Part 1 (subagent authoring):** $0.3871 / 1m20s API / 2m37s wall
+**Cost — Part 2 (pipeline execution):** $1.53 / 6m54s API / 11m7s wall
+**Combined total:** $1.92 / 8m14s API / 13m44s wall
+**Code changes:** 110 lines added (Part 1) + 392 lines added, 4 removed (Part 2)
+
+**Outputs produced** (`outputs/multi_agent/`):
+- `cleaned_violations.csv` + `data_cleaning_log.md` — data-cleaner's output
+- `zip_stats.csv`, `top10.csv`, `trend_data.csv` — analyst's output, monthly granularity
+- `charts/stacked_bar.png`, `charts/trend_line.png` — visualizer's output (trend line built as small multiples since 10 zips exceeds the 8-hue categorical palette)
+- `narrative.md` — narrator's output
+
+**Independence check:** the subagent-authoring session initially referenced
+`scripts/pipeline.py` and `outputs/single_agent/` while exploring the repo
+(see `lessons-learned.md`). The four subagent files were deleted and
+re-authored with an explicit instruction not to reference single-agent's
+work; the second attempt confirmed no single-agent files were opened.
+
+**Data quality finding — corrupted postcode artifact, caught downstream:**
+the top-ranked zip by strict Class C percentage, `02018`, has only 1 total
+violation (100% Class C) — not a real signal. The analyst subagent identified
+it as a likely corrupted-postcode artifact; the visualizer annotated it as a
+"single-record artifact" in both charts rather than silently dropping it; the
+narrator named it but correctly pivoted the substantive finding to the real
+high-volume zips (10475, 10009, 10030, 10039, 10454), which show Class C
+counts rising through 2025 and declining since late 2025/early 2026.
+
+**Root cause of the artifact — a genuine spec-adherence failure, not a data
+issue:** `data-cleaner.md`'s own specification required dropping any Postcode
+outside the valid NYC range 10001–11697. What it actually implemented was a
+**format normalizer, not a range validator** — cast to string, strip
+non-digits, zero-pad to 5 digits — confirmed directly from its own
+`data_cleaning_log.md`, which shows only 36 rows dropped (missing Postcode
+only) versus single-agent's 49 (missing + malformed). A malformed value like
+`2018` isn't rejected by that logic; it gets zero-padded into `02018`, a
+syntactically valid-looking 5-digit string that passes a digit-count check
+while remaining geographically nonsense. **The cleaning subagent's own
+normalization step is what manufactured the corrupted value** that the
+analyst subagent then had to catch — this isn't a silent omission, it's a
+different (and insufficient) check substituted for the one specified.
+
+**Notes:**
+- Row-count comparison against single-agent (1,048,539 vs. 1,048,526) is what
+  surfaced this — the 13-row gap exactly matches single-agent's
+  malformed-postcode drop count, confirming multi-agent's cleaning stage
+  did not perform that check.
+- Analyst catching the artifact downstream, and narrator correctly not
+  treating it as a real finding, is a genuine point in multi-agent's favor —
+  a specialist stage caught and contained an upstream agent's mistake before
+  it corrupted the headline result. Worth weighing this against the Data
+  handling failure below when assessing overall reliability, not just netting
+  them against each other.
+
+#### Human score
+
+| Section | Pass | Partial | Fail | Notes |
+|---|---|---|---|---|
+| Data handling | | | ✅ | data-cleaner's spec required dropping malformed Postcodes outside 10001–11697; it implemented a 5-digit format normalizer instead, which did not reject malformed values and actively produced the `02018` artifact rather than merely failing to catch it. This is a genuine deviation from the stated cleaning rule, not an unexplained drop |
+| Top-10 table | | | ✅ | `02018` (1 total violation, fabricated 100% Class C) occupies rank 1, displacing a genuine result. Correctness failure in the table's core job, independent of downstream handling |
+| Stacked bar chart | | ✅ | | Correctly executed its own spec (matches table scope, absolute counts, A/B/C stacked) and transparently annotated `02018` as a "single-record artifact" rather than presenting it as legitimate — but the artifact still occupies one of 10 bar positions. Chart faithfully rendered a corrupted upstream ranking; the corruption is the table's failure, not a charting-logic bug, so scored one notch above the outright Fails rather than identically |
+| Trend line | | | ✅ | Two independent issues: (1) includes `02018` as one of the panels, same displacement problem as the table; (2) `analyst.md`'s own spec calls for showing only "the top 6 of the 10 ranked zips... kept to 6 for chart legibility" — this chart shows all 10 as small multiples, a direct deviation from the pipeline's own written spec, separate from the data-quality issue |
+| Narrative | ✅ | | | Explicitly sets `02018` aside as a non-signal artifact, correctly identifies 10006 as the next real result, pivots to the volume-weighted zips (10475, 10009, 10030, 10039, 10454) with every number traceable to `top10.csv`/`trend_data.csv`, and appropriately caveats the partial final month. The one component that correctly contained the upstream failure rather than propagating it |
+
+**Overall spec-match (human):** 1 / 4 core outputs fully passing (Narrative only; Top-10 table and Trend line Fail, Stacked bar chart Partial, Data handling — the prerequisite check — also Fail)
 
 ---
 
 ## Cross-architecture comparison
 
-*(Fill in once both architectures have a completed, scored run.)*
+*(AI self-score and MAST-tagged failure modes still pending for multi-agent — fill in once the multi-agent AI self-score is complete.)*
 
 | Metric | Single-agent | Multi-agent |
 |---|---|---|
-| Cost | $1.06 | ___ |
-| Latency (API) | 4m 47s | ___ |
-| Spec-match (human) | ___ | ___ |
-| Spec-match (AI self-score) | ___ | ___ |
+| Cost | $1.06 | $1.92 (Part 1: $0.3871 subagent authoring + Part 2: $1.53 pipeline execution — see note on forced session restart above) |
+| Latency (API) | 4m 47s | 8m 14s (1m 20s + 6m 54s) |
+| Latency (wall) | 8m 0s | 13m 44s (2m 37s + 11m 7s) |
+| Spec-match (human) | 2 / 4 *(revised down from initial 4/4 after AI self-score review — see single-agent Agreement section)* | 1 / 4 |
+| Spec-match (AI self-score) | 2 / 4 | ___ |
 | Failure modes (MAST-tagged) | ___ | ___ |
