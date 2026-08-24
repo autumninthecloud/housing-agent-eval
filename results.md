@@ -201,16 +201,43 @@ different (and insufficient) check substituted for the one specified.
 | Data handling | | | ✅ | data-cleaner's spec required dropping malformed Postcodes outside 10001–11697; it implemented a 5-digit format normalizer instead, which did not reject malformed values and actively produced the `02018` artifact rather than merely failing to catch it. This is a genuine deviation from the stated cleaning rule, not an unexplained drop |
 | Top-10 table | | | ✅ | `02018` (1 total violation, fabricated 100% Class C) occupies rank 1, displacing a genuine result. Correctness failure in the table's core job, independent of downstream handling |
 | Stacked bar chart | | ✅ | | Correctly executed its own spec (matches table scope, absolute counts, A/B/C stacked) and transparently annotated `02018` as a "single-record artifact" rather than presenting it as legitimate — but the artifact still occupies one of 10 bar positions. Chart faithfully rendered a corrupted upstream ranking; the corruption is the table's failure, not a charting-logic bug, so scored one notch above the outright Fails rather than identically |
-| Trend line | | | ✅ | Two independent issues: (1) includes `02018` as one of the panels, same displacement problem as the table; (2) `analyst.md`'s own spec calls for showing only "the top 6 of the 10 ranked zips... kept to 6 for chart legibility" — this chart shows all 10 as small multiples, a direct deviation from the pipeline's own written spec, separate from the data-quality issue |
+| Trend line | | | ✅ | `02018` (fabricated, single-record) occupies one of the 10 panels in a chart whose purpose is showing trend direction for the top-ranked zips. Unlike the stacked bar chart, where the artifact is one labeled bar among nine legitimate ones, here it corrupts the chart's core premise — one of "the 10 zips that matter" isn't a real zip at all. Displacing a genuine result from a top-10 trend view is a correctness failure, not just a presentation quirk. *(Note: an earlier draft of this reasoning cited a "top 6 of 10" requirement from `analyst.md` — that requirement was in an earlier, contaminated draft of the file that was deleted and rewritten; the actual governing `analyst.md` and `visualizer.md` correctly permit all 10 zips as small multiples, confirmed independently by the AI self-score below. That citation was a documentation error, not a real spec deviation, and has been removed. The Fail stands on the `02018` displacement issue alone.)* |
 | Narrative | ✅ | | | Explicitly sets `02018` aside as a non-signal artifact, correctly identifies 10006 as the next real result, pivots to the volume-weighted zips (10475, 10009, 10030, 10039, 10454) with every number traceable to `top10.csv`/`trend_data.csv`, and appropriately caveats the partial final month. The one component that correctly contained the upstream failure rather than propagating it |
 
 **Overall spec-match (human):** 1 / 4 core outputs fully passing (Narrative only; Top-10 table and Trend line Fail, Stacked bar chart Partial, Data handling — the prerequisite check — also Fail)
+
+#### AI self-score
+
+*(Scored independently in a fresh subagent session with no access to the human
+score above or to `results.md` at all — only `rubric.md`, the files in
+`outputs/multi_agent/`, and the subagent specs in `.claude/agents/`, per
+`rubric.md` protocol.)*
+
+| Section | Pass | Partial | Fail | Notes |
+|---|---|---|---|---|
+| Data handling | ✅ | | | Source used as-is; `NOVIssuedDate` correctly used; row-count arithmetic (1,048,575 − 36 = 1,048,539) verified exactly against actual file line count |
+| Top-10 table | | ✅ | | Ranking metric, grouping (Postcode), and math all verified correct (spot-checked 02018=100%, 10006=60.0%, 10475=39.7222% — all match). But no minimum-volume threshold on the ranking lets tiny-n rows dominate: rank #1 is `02018` with a single record and a "02" prefix that isn't a valid NYC zip at all (likely a corrupted postcode that passed the cleaner's 5-digit format check without a plausibility check); `10005` (n=25) and `10006` (n=90) also rank ahead of any real high-volume zip. Table format is spec-compliant but practically misleading without that caveat baked in |
+| Stacked bar chart | ✅ | | | Correct axes, correct A/B/C stacking, same 10 zips as the table, absolute counts. Explicitly annotates 02018 as a "single-record artifact" — good transparency |
+| Trend line | ✅ | | | Monthly buckets (`NOVIssuedDate`-derived `Period`), Class C only, all 10 top zips shown (small-multiples with independent y-scales, explicitly justified in the subtitle per visualizer.md's allowance). Rise-then-decline shape is visually checkable per panel without narrative support |
+| Narrative | ✅ | | | Every number spot-checked against `trend_data.csv`/`top10.csv` matched exactly (e.g., 10454 peak 306 in 2025-12, end value 42 in 2026-08 — both confirmed). Correctly deprioritizes the low-N artifact rows in favor of high-volume zips, answers the core question, and flags the partial-month caveat for 2026-08 rather than overclaiming |
+
+**Overall spec-match (AI):** 3 / 4 core outputs fully passing
+
+**Reasoning for the one Partial:** The Top-10 table's four rubric sub-checks (ranking metric, grouping, math, completeness) all literally pass, but an independent data-quality check found `02018` is not a valid NYC postcode and has n=1, yet ranks #1 by the stated methodology; `10005`/`10006` are legitimate but statistically thin. Downstream agents (visualizer, narrator) both compensated by flagging/deprioritizing it, but the table itself — the actual rubric deliverable — has no such safeguard. Failure mode tag: verification failure (missing plausibility/minimum-N check before finalizing the ranked table).
+
+#### Agreement
+
+| | |
+|---|---|
+| Sections where human and AI scores matched | 2 / 5 (Stacked bar chart — both credited its transparent `02018` annotation; Narrative — both Pass, both independently verified its numbers trace back to `top10.csv`/`trend_data.csv`) |
+| Sections where they diverged, and how | **Data handling:** human Fail vs. AI Pass — the AI's own spot-check verified the row-count arithmetic (1,048,575 − 36 = 1,048,539) but did not check that arithmetic *against what the spec required*: `data-cleaner.md` mandated a 10001–11697 range check, and the AI accepted the file's normalizer-based approach without noticing it doesn't perform that check. Confirming the math is internally consistent is not the same as confirming the pipeline did what it was told to do — a real gap in this self-score, not a difference of judgment. **Top-10 table:** human Fail vs. AI Partial — both agree `02018` is a real, disqualifying-caliber problem (the AI's own language — "not a valid NYC postcode," "practically misleading" — is nearly as strong as the human's Fail reasoning), but land on different severities. The AI's own failure-mode tag ("verification failure... before finalizing the ranked table") arguably supports a Fail as much as a Partial; worth treating this specific gap as more a threshold disagreement than a substantive one. **Trend line:** human Fail vs. AI Pass — the AI correctly confirmed showing all 10 zips is spec-compliant (this AI self-score itself is what caught and corrected the mistaken "top 6" citation in this document, per the note above), but its Pass reasoning focuses entirely on the chart's technical execution and doesn't weigh the `02018` displacement issue at all, unlike its own Top-10 table review, which did |
+| Did the AI over-score or under-score itself relative to the human score? | **Over-scored relative to the human** (3/4 vs. 1/4) — the reverse direction from the single-agent comparison (where the AI under-scored itself, 2/4 vs. human's initial 4/4). Notably, the AI's own reasoning text is often *more* critical in substance than its final Pass/Partial verdict reflects — e.g. calling the table "practically misleading" while still marking it Partial, or independently confirming a genuine spec violation (Trend line's all-10-zips display) while treating a different, arguably more severe spec-relevant issue (`02018`'s presence) as not disqualifying. This suggests the divergence isn't just "the AI missed things" — in Data handling it did, but in Top-10 table and Trend line, the AI largely *saw* the same problems the human did and still scored more leniently, indicating a threshold/severity-calibration gap rather than a detection gap in those two cases specifically |
 
 ---
 
 ## Cross-architecture comparison
 
-*(AI self-score and MAST-tagged failure modes still pending for multi-agent — fill in once the multi-agent AI self-score is complete.)*
+*(MAST-tagged failure modes for the full comparison still pending — this document has a "verification failure" tag for multi-agent's Top-10 table from the AI self-score; a full MAST pass across both architectures hasn't been done yet.)*
 
 | Metric | Single-agent | Multi-agent |
 |---|---|---|
@@ -218,5 +245,5 @@ different (and insufficient) check substituted for the one specified.
 | Latency (API) | 4m 47s | 8m 14s (1m 20s + 6m 54s) |
 | Latency (wall) | 8m 0s | 13m 44s (2m 37s + 11m 7s) |
 | Spec-match (human) | 2 / 4 *(revised down from initial 4/4 after AI self-score review — see single-agent Agreement section)* | 1 / 4 |
-| Spec-match (AI self-score) | 2 / 4 | ___ |
-| Failure modes (MAST-tagged) | ___ | ___ |
+| Spec-match (AI self-score) | 2 / 4 | 3 / 4 |
+| Failure modes (MAST-tagged) | ___ | Verification failure (Top-10 table, per AI self-score) |
