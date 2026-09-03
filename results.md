@@ -247,9 +247,99 @@ rigorous self-assessment.
 
 ---
 
-## Cross-architecture comparison
+## MAST-taxonomy failure-mode tagging (full pass)
 
-*(MAST-tagged failure modes for the full comparison still pending — this document has a "verification failure" tag for multi-agent's Top-10 table from the AI self-score; a full MAST pass across both architectures hasn't been done yet.)*
+Tags below are assigned against the **human score** (the rubric's authoritative
+score for the headline comparison table). AI self-score divergences are noted
+where the disagreement is itself informative, but are not separately MAST-tagged
+as pipeline failures — see the standalone scoring-process note at the end of
+this section.
+
+MAST categories used: **Specification** (agent deviates from, ignores, or
+under-specifies the task), **Inter-Agent Misalignment** (breakdown in how
+agents coordinate, hand off, or rely on each other), **Task Verification**
+(no agent checks a deliverable's correctness/plausibility before it's treated
+as final).
+
+### Single-agent
+
+| Section | Score | MAST category | Reasoning |
+|---|---|---|---|
+| Top-10 table | Partial | **Specification** | An unstated ≥50-violation minimum-sample filter was applied before ranking. The filter is well-reasoned and documented in `data_notes.md`, but it silently substitutes the agent's own ranking criterion for the one the rubric/spec actually defines. Same category as multi-agent's Data handling failure below — an agent substituting a different rule than the one it was given — but caught and contained by the same agent in the same pass, not propagated. |
+| Trend line | Partial | **Task Verification** | The narrative's up/down calls depend on judgment calls invisible in the chart itself (stable-window cutoff starting Aug 2025, Aug 2026 partial-month exclusion, 10006's single-spike-driven direction). No check was made that the deliverable satisfies the rubric's own "checkable from the chart alone" criterion before calling the trend line complete. |
+
+Single-agent has no Inter-Agent Misalignment tag — there's only one agent,
+so this category structurally doesn't apply. This absence is itself worth
+noting for the cross-architecture comparison: single-agent's two failures are
+both individual-agent failures, with no coordination layer to fail at.
+
+### Multi-agent
+
+| Section | Score | MAST category | Reasoning |
+|---|---|---|---|
+| Data handling | Fail | **Specification** | `data-cleaner.md`'s spec required a 10001–11697 range validator; the subagent implemented a 5-digit format normalizer instead. This is the root cause of the `02018` artifact — not a missed edge case, but a different (and insufficient) check substituted for the one specified. Root of the causal chain below. |
+| Top-10 table | Fail | **Task Verification** *(downstream of Data handling, same causal chain)* | Independent of the cleaning-stage spec failure, the ranking step itself has no plausibility or minimum-N check before finalizing rank #1. Even granting the malformed input, a verification step here (n=1, geographically implausible prefix) could have caught what the cleaning stage missed. This is why it's tagged separately from Data handling rather than folded into it — it's a distinct missing safeguard, one stage later. |
+| Trend line | Fail | **Task Verification** *(downstream of Data handling, same causal chain)* | Same artifact, one stage further downstream, corrupting a different deliverable's core premise (one of "the 10 zips that matter" isn't real). Not a new failure mechanism — the same missing plausibility check that should have stopped the artifact at the Top-10 table stage would also have stopped it here. Listed separately only because it's a separately-scored rubric deliverable, not because it's a separately-caused failure. |
+| Stacked bar chart | Partial | *(no new failure — containment, not failure)* | The visualizer correctly executed its own spec against corrupted upstream input and transparently labeled the artifact rather than presenting it as legitimate. This is the one deliverable where an agent's behavior actively reduced harm from the upstream failure rather than propagating or being blind to it. Scored Partial only because the artifact still physically occupies a bar position, not because the visualizer did anything wrong. |
+| — | — | **Inter-Agent Misalignment** *(system-level, not tied to one rubric row)* | The analyst identified `02018` as a likely artifact and the narrator correctly excluded it from the substantive finding — but neither fed that judgment back upstream or into the Top-10 table deliverable itself, which remains uncorrected on disk. The system has an agent that *knows* the ranking is wrong (analyst's own reasoning) and an agent that *acts on that knowledge narratively* (narrator), but no mechanism routes that knowledge back into fixing or flagging the table artifact, which is the actual rubric deliverable being scored. This is a coordination gap distinct from any single agent's spec deviation — a fix for Data handling's Specification failure would prevent this instance, but wouldn't close the general gap: nothing in this pipeline's design routes a downstream agent's correction back to an upstream deliverable. |
+
+**Causal chain visualization:**
+
+```
+data-cleaner (Specification failure)
+  → normalizer accepts "2018" → zero-pads to "02018"
+      → analyst (Task Verification gap: no plausibility/min-N check)
+          → 02018 ranks #1 in Top-10 table [FAIL]
+              → 02018 occupies a panel in Trend line [FAIL]
+              → 02018 occupies a bar in Stacked bar chart [Partial — contained via annotation]
+          → analyst's own reasoning correctly flags 02018 as an artifact,
+            but that correction never reaches the Top-10 table itself
+            [Inter-Agent Misalignment]
+              → narrator correctly excludes it from the narrative [Pass —
+                contained via correct downstream judgment, same gap as above]
+```
+
+### Cross-architecture failure-mode comparison
+
+| MAST category | Single-agent | Multi-agent |
+|---|---|---|
+| Specification | 1 (Top-10 table — contained within the same pass) | 1 (Data handling — root cause of a 3-deliverable chain) |
+| Task Verification | 1 (Trend line) | 2 (Top-10 table, Trend line — both downstream of the same root cause) |
+| Inter-Agent Misalignment | N/A (single agent) | 1 (correction generated but not routed back to the deliverable) |
+| Total failing/partial deliverables | 2 / 4 | 4 / 4 (incl. 1 contained) |
+
+**Note on severity vs. count:** raw counts favor single-agent, but count alone
+understates the difference in kind. Single-agent's two failures are
+independent — a bad filter and a bad chart-verification gap, unrelated to each
+other. Multi-agent's four are almost entirely one root-cause failure
+propagating through a pipeline with no mechanism to route a downstream
+correction back upstream — architecturally, the interesting failure here
+isn't "the data-cleaner made a mistake" (single agents make mistakes too,
+see single-agent's own Top-10 table row) but that **the system had the
+information needed to prevent the Top-10 table failure (the analyst's own
+correct diagnosis) and no structural way to use it.** That gap — not the
+original data-cleaner bug — is the multi-agent-specific finding worth
+carrying into Phase 3's governance-audit skill: a "delegation logging" or
+"override point" control that let a downstream agent's flag actually amend
+an upstream deliverable would have prevented 2 of the 3 propagated failures
+outright.
+
+### Scoring-process note (not a pipeline failure — logged separately)
+
+The human/AI self-score Agreement sections above surface a pattern worth
+keeping distinct from the pipeline MAST tags: in the multi-agent self-score,
+the AI's own reasoning text was frequently as critical as the human's (e.g.
+calling the Top-10 table "practically misleading," independently confirming
+the `02018` displacement in the Trend line) while its Pass/Partial verdicts
+were consistently more lenient than that reasoning implied. This is a
+**severity-calibration gap in the scoring process itself**, not a pipeline
+failure mode, and doesn't get a MAST tag — but it's directly relevant to
+Phase 3, where the same self-scoring pattern could show up in the
+governance-audit skill's own outputs and would be worth checking for.
+
+---
+
+## Cross-architecture comparison
 
 | Metric | Single-agent | Multi-agent |
 |---|---|---|
@@ -258,4 +348,4 @@ rigorous self-assessment.
 | Latency (wall) | 8m 0s | 13m 44s (2m 37s + 11m 7s) |
 | Spec-match (human) | 2 / 4 *(revised down from initial 4/4 after AI self-score review — see single-agent Agreement section)* | 1 / 4 |
 | Spec-match (AI self-score) | 2 / 4 | 3 / 4 |
-| Failure modes (MAST-tagged) | ___ | Verification failure (Top-10 table, per AI self-score) |
+| Failure modes (MAST-tagged) | Specification (Top-10 table), Task Verification (Trend line) — see full MAST-taxonomy tagging section above | Specification (Data handling, root cause), Task Verification (Top-10 table, Trend line — downstream), Inter-Agent Misalignment (correction not routed back to deliverable) — see full MAST-taxonomy tagging section above |
