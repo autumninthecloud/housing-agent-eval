@@ -143,6 +143,76 @@ terms of reproducibility — it only bounds what counts as "current."
 - HPD: `NOVIssueDate ≥ today − 365d`
 - 311: `created_date ≥ today − 365d`, `agency = 'HPD'`
 
+### Pull strategy: full re-fetch (HPD) vs. two-query split (311)
+
+The two datasets use **different pull strategies**, and this asymmetry is
+intentional, not inconsistent design — it's driven by measured per-query cost
+on each live dataset, not by row count (the two datasets' trailing-12-month
+row counts are actually comparable: ~1.77M for HPD vs. ~1.63M for 311, both
+measured 2026-09-04).
+
+**What was tried and measured, against the live Socrata API:**
+
+- 311 (`erm2-nwe9`) is a 28M+-row citywide table. A single filtered,
+  paginated page (`created_date` + `agency='HPD'`, `$order` by either
+  `unique_key` or the internal `:id`) consistently took **267-350 seconds**,
+  regardless of `$limit` (5,000 vs. 50,000 made no measurable difference —
+  325s vs. 267-350s) or which column it was ordered by (`:id` was actually
+  slightly slower, at 349s, than `unique_key`). This means the cost is a
+  fixed scan/filter cost paid once per query, not a pagination or sort cost —
+  a `count(*)` query with the same `$where` returned in 5.6s, confirming that
+  materializing and paging through full rows (not filtering/counting) is
+  what's expensive on this table.
+- HPD (`wvxf-dwi5`) is a much smaller underlying table. A filtered page took
+  33s at `$limit=5000` and 66.5s at `$limit=50000` — real cost, but far
+  below 311's, and it does scale somewhat with page size (unlike 311's flat
+  cost), consistent with a smaller base table.
+- Consequence: a full 365-day re-fetch of 311 needs ~33 pages even at the
+  largest practical page size, at ~300-350s/page → **~3 hours/week**. The
+  same full-re-fetch approach for HPD, at `page_size=50000`, needs only ~36
+  pages at ~66.5s/page → **~40 minutes/week** — acceptable for a weekly job.
+
+**311's fix — two queries per run instead of one full-window query**
+(`socrata_pipeline.DatasetConfig.split_query`, used only for the 311
+config in `refresh_weekly.py`):
+
+1. **New since last successful run**: `{date_field} >= last_successful_run`
+   (or the full 365-day window on a dataset's first-ever run, when there's
+   no prior history snapshot to diff against), ANDed with `agency='HPD'`.
+2. **Still open, needs a status re-check**: `{date_field} >= (365-day
+   window) AND closed_date IS NULL`, ANDed with `agency='HPD'` — once a 311
+   complaint closes it's effectively immutable, so only currently-open
+   complaints need their status rechecked, which is a small fraction of the
+   1.63M-row window.
+
+Both queries still pay the ~300-350s fixed per-query cost, but it's paid
+twice a week instead of ~33 times, cutting 311's weekly runtime from ~3
+hours to an estimated **~10-15 minutes**. HPD keeps the original
+single-query full re-fetch — at `page_size=50000` its ~40 min/week is
+already fine, and splitting it would add complexity for no benefit.
+
+**Accepted risk, explicitly**: a complaint whose status changes *after* it's
+already been recorded as closed (`closed_date` not null) — including a
+reopen-then-reclose cycle that completes entirely between two of this
+pipeline's weekly runs — is invisible to both queries above and won't be
+picked up until a periodic full resync (running with `split_query=False` /
+a full-window pull) is done manually or scheduled separately. This is a
+deliberate tradeoff traded for the ~3-hour-to-~15-minute runtime win, not an
+oversight — worth keeping in mind if the insight agent's anomaly detection
+ever seems to miss a status flip on an older complaint.
+
+**Rejected alternative — `:updated_at` filtering**: before landing on the
+new/still-open split, filtering 311 by Socrata's internal `:updated_at`
+system column (`:updated_at >= last_successful_run`) was tested as a way to
+find only genuinely-changed rows. It was rejected: counts of rows with
+`:updated_at` in the last 1 day (451,960), 7 days (468,474), and 60 days
+(559,861) were all roughly the same size despite the wildly different
+window lengths — the signature of a bulk reindex/republish event touching
+hundreds of thousands of rows at once, not per-row edit tracking. `:updated_at`
+is not a reliable "this row's content actually changed" signal on this
+dataset. Documented here so this dead end isn't re-discovered and re-tested
+later.
+
 ### Storage design: upsert current + immutable dated history
 
 Because both datasets are mutable (existing records get status updates, not
