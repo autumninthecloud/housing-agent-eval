@@ -24,10 +24,7 @@ This repo contains a three-phase project:
 ## Data
 
 - **Static dataset (Phase 1):** NYC Housing Maintenance Code Violations, filtered to NOVIssuedDate ≥ 2025-01-01 (CSV export, stored under `data/static/`). Columns retained: `ViolationID`, `Borough`, `Postcode`, `Class`, `NOVIssuedDate`. All other source columns (`NOVDescription`, `CurrentStatus`, `CurrentStatusDate`, `ViolationStatus`, `RentImpairing`, `Latitude`, `Longitude`, `NTA`, `NOVID`) were dropped to reduce file size; none are used by the ranking, chart, or trend calculations defined above. This trimmed schema applies only to the Phase 1 static file and must stay fixed for the duration of the single-agent vs. multi-agent comparison — do not modify columns mid-experiment.
-- **Live datasets (Phase 2):**
-  - NYC HPD Housing Violations (NYC Open Data API, incremental weekly pulls).
-  - NYC 311 Housing Complaints (NYC Open Data API).
-  - Column set is not restricted to the Phase 1 schema — retain whatever fields the insight agent needs for anomaly detection and narrative context (e.g. `ViolationStatus`, `Latitude`/`Longitude`).
+- **Live datasets (Phase 2):** see the Phase 2 design summary below and `CLAUDE.md`'s Phase 2 design section for full detail (datasets, schema, storage design). Column set is not restricted to the Phase 1 schema.
 
 ## Core experiment question
 
@@ -77,6 +74,50 @@ the final ranking. Full detail, including where human and AI scoring diverged
 and why, is in `results.md`; the methodology decisions behind how this
 comparison was kept fair are in `lessons-learned.md`.
 
+A full MAST-taxonomy failure-mode tagging pass across both architectures is
+also complete — see `results.md`'s "MAST-taxonomy failure-mode tagging"
+section for per-section tags, the causal chain behind multi-agent's
+propagated failures, and the cross-architecture failure-mode comparison.
+
+## Phase 2 design summary (locked, pre-implementation)
+
+Full detail in `CLAUDE.md`'s Phase 2 design section. Summary:
+
+**Not a re-run of Phase 1's architecture comparison.** The weekly refresh is
+a deterministic script (no LLM); the insight agent is a single agent, not
+orchestrator + subagents. Phase 1's finding that multi-agent's only
+structural edge (a subagent catching another's mistake) doesn't transfer to
+a single lightweight anomaly/narrative step supported this default.
+
+**Datasets:**
+- HPD Housing Maintenance Code Violations (`wvxf-dwi5`) — same source as
+  Phase 1, pulled live.
+- 311 Service Requests from 2020 to Present (`erm2-nwe9`), filtered to
+  `agency = 'HPD'` for the housing-complaint subset. Not a separate
+  dataset — the citywide 311 feed, filtered.
+
+Both are **mutable** (existing records get status updates, not just new
+rows), confirmed against each dataset's field documentation. Storage is
+upsert-by-ID into a canonical current file, plus immutable dated history
+snapshots — not append-only — specifically to avoid the duplicate-row
+corruption a naive append design would cause on a mutable feed.
+
+**Rolling 12-month window**, computed dynamically each run, replacing
+Phase 1's fixed 2025-01-01 cutoff — appropriate for a one-time static
+comparison, wrong for an ongoing live pipeline where a fixed cutoff would
+let the "current" file grow unbounded and dilute anomaly detection with
+stale cases. Full history beyond 12 months lives in the dated snapshots.
+
+**Handoff:** the refresh script writes `weekly_manifest.json` with full new/
+updated rows embedded (not just IDs), so the insight agent reads one small
+file instead of re-scanning the full canonical dataset. The agent only runs
+if a manifest exists for that run, which doubles as the enforcement
+mechanism for the pipeline's fail-fast rule (no partial writes on error).
+
+**Infra:** GitHub Actions cron (public repo, free, uncapped), manual
+`workflow_dispatch` also enabled for testing, NYC Open Data app token stored
+as a GitHub Actions secret (never committed).
+
 ## Dashboard components
 
 - Top-10 table: zip codes ranked by Class C violation percentage.
@@ -86,26 +127,32 @@ comparison was kept fair are in `lessons-learned.md`.
 ## Folder structure
 
 - `data/static/` – NYC violations snapshot for the controlled experiment.
-- `data/live/` – NYC violations / 311 data for the weekly pipeline.
+- `data/live/` – NYC violations / 311 data for the weekly pipeline (see Phase 2 design summary above).
 - `.claude/agents/` – Claude Code subagent definitions.
 - `outputs/` – dashboards, charts, and comparison tables.
 - `archive/` – discarded or superseded runs kept for reference (e.g. early runs with uncontrolled variables). Not used for official results — see `lessons-learned.md` for why each one was archived.
 
 ## Status
 
-**Phase 1: complete.** Single-agent and multi-agent pipelines both built,
-run once (one-shot methodology), and scored against `rubric.md` by both a
-human reviewer and an isolated AI self-score session. See Results summary
-above, `results.md` for full detail, and `lessons-learned.md` for the
-methodology decisions and failure modes discovered along the way (17 logged
-lessons, spanning data-schema scoping, model pinning, skill-invocation risks,
-and the specific spec-adherence failure behind multi-agent's lower score).
+**Phase 1: complete**, including the full MAST-taxonomy failure-mode tagging
+pass. Single-agent and multi-agent pipelines both built, run once (one-shot
+methodology), and scored against `rubric.md` by both a human reviewer and an
+isolated AI self-score session. See Results summary above, `results.md` for
+full detail (including the MAST tagging section), and `lessons-learned.md`
+for the methodology decisions and failure modes discovered along the way (17
+logged lessons, spanning data-schema scoping, model pinning, skill-invocation
+risks, and the specific spec-adherence failure behind multi-agent's lower
+score).
 
-**Not yet done for Phase 1:** a full MAST-taxonomy failure-mode tagging pass
-across both architectures (only one failure mode is currently tagged, in
-`results.md`'s cross-architecture table).
+**Phase 2: design complete, implementation not yet started.** Datasets,
+schema, storage design (upsert + dated history snapshots), the rolling
+12-month window, the manifest-based handoff to the insight agent, and the
+GitHub Actions cron infrastructure are all locked — see the Phase 2 design
+summary above and `CLAUDE.md` for full detail. Next step is writing the
+deterministic refresh script.
 
-**Next up:** Phase 2 (live weekly pipeline) or Phase 3 (governance-audit
-skill) — not yet started. The `data-cleaner` spec-adherence failure from
-Phase 1 is a natural, concrete test case for the Phase 3 audit skill once
-built.
+**Phase 3: not yet started.** The `data-cleaner` spec-adherence failure from
+Phase 1, and the Inter-Agent Misalignment gap identified in the MAST pass
+(a downstream agent's correct diagnosis never routed back to fix the
+upstream deliverable), are both natural, concrete test cases for the Phase 3
+audit skill once built.
