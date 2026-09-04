@@ -2,21 +2,27 @@
 socrata_pipeline.py
 
 Shared, dependency-free helpers for pulling a Socrata (NYC Open Data) dataset,
-upserting it into a canonical "current" CSV, writing an immutable dated history
-snapshot, and contributing a per-dataset entry to the weekly manifest.
+upserting it into a canonical "current" CSV, and contributing a per-dataset
+entry to the weekly manifest.
 
 Design reference: CLAUDE.md, "Phase 2 design (locked, pre-implementation)".
 
 Key properties implemented here:
 - No third-party dependencies (urllib + csv only).
 - Per-dataset failure isolation: if a pull fails, this dataset's canonical
-  file and history snapshot are left completely untouched, and the caller
-  gets back a manifest entry with status "failed" instead of raising past
-  this module (see run_dataset_refresh's docstring for the exact contract).
+  file is left completely untouched, and the caller gets back a manifest
+  entry with status "failed" instead of raising past this module (see
+  run_dataset_refresh's docstring for the exact contract).
 - Upsert semantics: canonical file has exactly one row per entity ID; a
   fresh pull overwrites existing IDs and adds new ones. This assumes the API
   is itself the source of truth for "latest state" of a given ID (true for
   both HPD violations and 311 requests, which expose mutable status fields).
+- No dated history snapshots: canonical CSVs + weekly_manifest.json are
+  committed to the repo each run and are the only durable state. A
+  split-query dataset's "last successful run" cutoff is read back from the
+  previously-committed manifest (see _last_successful_run_for), not from
+  local files — this is what makes it work correctly on an ephemeral CI
+  runner, which gets a fresh checkout with no local run history at all.
 """
 
 from __future__ import annotations
@@ -54,15 +60,16 @@ class DatasetConfig:
             "novissueddate" or "created_date". Must be a Socrata datetime-typed
             field for the $where clause below to work.
         columns: ordered list of column names to request from the API and to
-            write to the canonical/history CSVs. This is the trimmed schema
-            from CLAUDE.md, not the full source schema.
+            write to the canonical CSV. This is the trimmed schema from
+            CLAUDE.md, not the full source schema.
         extra_where: an additional SoQL boolean expression ANDed onto the date
             filter, e.g. "agency = 'HPD'" for the 311 dataset. Pass None if no
             extra filter is needed.
         window_days: size of the rolling window in days. Defaults to 365 per
             the locked Phase 2 design (trailing 12 months).
-        canonical_path: where the upserted "current" CSV lives.
-        history_dir: directory where dated history snapshots are written.
+        canonical_path: where the upserted "current" CSV lives. This and
+            weekly_manifest.json are the only durable state — no dated
+            history snapshots are written (see module docstring).
         page_size: SODA API $limit per request. Defaults to the module-level
             PAGE_SIZE (0 means "use the default"). Large tables where the
             $where filter itself is the dominant cost (see split_query)
@@ -91,7 +98,6 @@ class DatasetConfig:
     extra_where: Optional[str] = None
     window_days: int = 365
     canonical_path: str = ""
-    history_dir: str = ""
     page_size: int = 0
     split_query: bool = False
     closed_date_field: Optional[str] = None
@@ -99,8 +105,6 @@ class DatasetConfig:
     def __post_init__(self) -> None:
         if not self.canonical_path:
             self.canonical_path = f"data/live/{self.name}_current.csv"
-        if not self.history_dir:
-            self.history_dir = "data/live/history"
         if self.id_field not in self.columns:
             raise ValueError(
                 f"id_field {self.id_field!r} must be included in columns for "
@@ -273,8 +277,8 @@ def upsert_rows(
             reflect real change, not just "the API returned this ID again".
         total_count_after_upsert: row count of the canonical file post-merge.
 
-    Does not write anything to disk — see write_canonical_and_snapshot for
-    that. Kept separate so the upsert logic is independently testable.
+    Does not write anything to disk — see write_canonical for that. Kept
+    separate so the upsert logic is independently testable.
     """
     existing = _read_canonical_csv(config.canonical_path, config.columns)
 
@@ -296,39 +300,35 @@ def upsert_rows(
     return new_rows, updated_rows, len(existing)
 
 
-def write_canonical_and_snapshot(
-    config: DatasetConfig, merged_rows_by_id: dict[str, dict[str, Any]], run_date: date
-) -> None:
-    """Writes the upserted canonical file and a dated, immutable history
-    snapshot. Both writes go through the same atomic temp-file-then-rename
-    path as _write_csv. History snapshots are never overwritten if a file
-    for this run_date already exists (defends against accidentally
-    re-running the same day and silently mutating a 'frozen' snapshot)."""
+def write_canonical(config: DatasetConfig, merged_rows_by_id: dict[str, dict[str, Any]]) -> None:
+    """Writes the upserted canonical file, atomically (temp file + rename —
+    see _write_csv). This is the only file this module writes per dataset;
+    weekly_manifest.json (written separately by write_manifest) is the
+    other piece of durable state."""
     all_rows = list(merged_rows_by_id.values())
     _write_csv(config.canonical_path, config.columns, all_rows)
 
-    history_path = os.path.join(config.history_dir, f"{config.name}_{run_date.isoformat()}.csv")
-    if os.path.exists(history_path):
-        raise DatasetRefreshError(
-            f"History snapshot {history_path} already exists — refusing to "
-            f"overwrite an immutable snapshot. If this run genuinely needs "
-            f"to re-run today, delete the existing snapshot manually first."
-        )
-    _write_csv(history_path, config.columns, all_rows)
-
 
 def run_dataset_refresh(
-    config: DatasetConfig, app_token: str, run_date: Optional[date] = None
+    config: DatasetConfig,
+    app_token: str,
+    run_date: Optional[date] = None,
+    last_successful_run: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Runs the full refresh for one dataset: fetch, upsert, write canonical
-    + history snapshot, and return this dataset's manifest entry.
+    """Runs the full refresh for one dataset: fetch, upsert, write the
+    canonical file, and return this dataset's manifest entry.
 
-    Contract: this function NEVER raises. Any failure (network, HTTP, decode,
-    or the immutable-snapshot guard in write_canonical_and_snapshot) is
-    caught here and converted into a manifest entry with status "failed" and
-    an error message — this is what makes per-dataset failure isolation work
-    at the call-site level (see run_all_datasets below), matching the
-    per-dataset failure model in CLAUDE.md.
+    last_successful_run: the ISO date this dataset last completed
+    successfully, as carried forward from the previously-committed
+    manifest (see _last_successful_run_for) — None if it never has (a
+    true first-ever run, or every prior run failed). Only used by
+    split_query datasets, as the "new since" cutoff.
+
+    Contract: this function NEVER raises. Any failure (network, HTTP, or
+    decode) is caught here and converted into a manifest entry with status
+    "failed" and an error message — this is what makes per-dataset failure
+    isolation work at the call-site level (see run_all_datasets below),
+    matching the per-dataset failure model in CLAUDE.md.
 
     On success, returns a manifest entry matching the schema in CLAUDE.md's
     "Handoff to the insight agent" section: status, new_count, updated_count,
@@ -347,10 +347,9 @@ def run_dataset_refresh(
             # DatasetConfig.split_query and CLAUDE.md's Phase 2 design for
             # why (a full 365-day re-fetch of the 311 dataset costs ~3
             # hours/week at its real-world row count).
-            last_run_str = _last_history_snapshot_date(config)
             new_since = (
-                datetime.strptime(last_run_str, "%Y-%m-%d").date()
-                if last_run_str
+                datetime.strptime(last_successful_run, "%Y-%m-%d").date()
+                if last_successful_run
                 else window_since
             )
             new_rows_where = _build_soql_where(config, new_since)
@@ -372,7 +371,7 @@ def run_dataset_refresh(
             row_id = str(row[config.id_field])
             existing[row_id] = {col: ("" if row.get(col) is None else str(row.get(col))) for col in config.columns}
 
-        write_canonical_and_snapshot(config, existing, run_date)
+        write_canonical(config, existing)
 
         return {
             "status": "success",
@@ -387,37 +386,72 @@ def run_dataset_refresh(
         return {
             "status": "failed",
             "error": str(exc),
-            "last_successful_run": _last_history_snapshot_date(config),
+            # Carried straight through unchanged — a failed run has no new
+            # success to report, so it passes along whatever it was given.
+            "last_successful_run": last_successful_run,
         }
 
 
-def _last_history_snapshot_date(config: DatasetConfig) -> Optional[str]:
-    """Looks at the history directory to report the most recent successful
-    run's date, for the manifest's last_successful_run field on failure."""
-    if not os.path.isdir(config.history_dir):
+def _read_manifest_if_exists(path: str) -> Optional[dict[str, Any]]:
+    """Reads a previously-written manifest.json, if present. This is the
+    only source of "last successful run" now that no local history files
+    are written — it works on a fresh CI checkout precisely because the
+    manifest (like the canonical CSVs) is committed to the repo each run,
+    unlike anything written to local disk mid-run."""
+    if not os.path.exists(path):
         return None
-    prefix = f"{config.name}_"
-    dates = []
-    for filename in os.listdir(config.history_dir):
-        if filename.startswith(prefix) and filename.endswith(".csv"):
-            date_part = filename[len(prefix):-len(".csv")]
-            try:
-                dates.append(datetime.strptime(date_part, "%Y-%m-%d").date())
-            except ValueError:
-                continue
-    return max(dates).isoformat() if dates else None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _last_successful_run_for(
+    dataset_name: str, previous_manifest: Optional[dict[str, Any]]
+) -> Optional[str]:
+    """Determines one dataset's last successful run date from the
+    previously-written manifest: that manifest's own run_date if this
+    dataset succeeded then, or the last_successful_run it was already
+    carrying forward if it had failed then too (chaining correctly through
+    any number of consecutive failures). Returns None if there's no usable
+    prior signal — a true first-ever run, or a dataset that has never
+    succeeded."""
+    if not previous_manifest:
+        return None
+    entry = previous_manifest.get("datasets", {}).get(dataset_name)
+    if not entry:
+        return None
+    if entry.get("status") == "success":
+        return previous_manifest.get("run_date")
+    return entry.get("last_successful_run")
+
+
+DEFAULT_MANIFEST_PATH = "data/live/weekly_manifest.json"
 
 
 def run_all_datasets(
-    configs: list[DatasetConfig], app_token: str, run_date: Optional[date] = None
+    configs: list[DatasetConfig],
+    app_token: str,
+    run_date: Optional[date] = None,
+    manifest_path: str = DEFAULT_MANIFEST_PATH,
 ) -> dict[str, Any]:
     """Runs run_dataset_refresh for every config independently — one
     dataset's failure has no effect on another's execution, per the locked
     per-dataset failure model. Returns the full manifest dict, ready to be
     written to weekly_manifest.json as-is (with config.name as each dataset's
-    key, matching CLAUDE.md's manifest schema)."""
+    key, matching CLAUDE.md's manifest schema).
+
+    Reads the manifest still sitting at manifest_path from the *previous*
+    run (if any) before building the new one, so each dataset's
+    last_successful_run can be carried forward — see
+    _last_successful_run_for. This read must happen before write_manifest
+    overwrites that file, which is why it's done here rather than by the
+    caller."""
     if run_date is None:
         run_date = date.today()
+
+    previous_manifest = _read_manifest_if_exists(manifest_path)
 
     manifest: dict[str, Any] = {
         "run_date": run_date.isoformat(),
@@ -425,12 +459,15 @@ def run_all_datasets(
     }
 
     for config in configs:
-        manifest["datasets"][config.name] = run_dataset_refresh(config, app_token, run_date)
+        last_successful_run = _last_successful_run_for(config.name, previous_manifest)
+        manifest["datasets"][config.name] = run_dataset_refresh(
+            config, app_token, run_date, last_successful_run=last_successful_run
+        )
 
     return manifest
 
 
-def write_manifest(manifest: dict[str, Any], path: str = "data/live/weekly_manifest.json") -> None:
+def write_manifest(manifest: dict[str, Any], path: str = DEFAULT_MANIFEST_PATH) -> None:
     """Writes the manifest to disk, atomically (temp file + rename), so a
     crash mid-write never leaves a half-written manifest for the insight
     agent to trip over."""

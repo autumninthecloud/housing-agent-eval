@@ -98,15 +98,19 @@ a single lightweight anomaly/narrative step supported this default.
 
 Both are **mutable** (existing records get status updates, not just new
 rows), confirmed against each dataset's field documentation. Storage is
-upsert-by-ID into a canonical current file, plus immutable dated history
-snapshots — not append-only — specifically to avoid the duplicate-row
-corruption a naive append design would cause on a mutable feed.
+upsert-by-ID into a canonical current file — not append-only — specifically
+to avoid the duplicate-row corruption a naive append design would cause on a
+mutable feed. No dated history archive is kept: at real measured row counts
+that would add ~180-190MB per dataset to the repo on every single run,
+indefinitely, so canonical current-state files plus `weekly_manifest.json`
+(and eventually the insight agent's narrative) are committed each run
+instead, prioritizing accurate current state over unbounded archival.
 
 **Rolling 12-month window**, computed dynamically each run, replacing
 Phase 1's fixed 2025-01-01 cutoff — appropriate for a one-time static
 comparison, wrong for an ongoing live pipeline where a fixed cutoff would
 let the "current" file grow unbounded and dilute anomaly detection with
-stale cases. Full history beyond 12 months lives in the dated snapshots.
+stale cases.
 
 **Handoff:** the refresh script writes `weekly_manifest.json` with full new/
 updated rows embedded (not just IDs), so the insight agent reads one small
@@ -155,7 +159,7 @@ score).
 
 **Phase 2: refresh script implemented and validated against the live API,
 not yet deployed.** `scripts/socrata_pipeline.py` and `scripts/refresh_weekly.py`
-implement the locked design (datasets, upsert + dated history snapshots,
+implement the locked design (datasets, upsert-only canonical storage,
 rolling 12-month window, manifest-based handoff), plus a pull-strategy fix
 found by actually running the script against live Socrata data — see the
 Phase 2 design summary above and `CLAUDE.md` for full detail. Not yet done:

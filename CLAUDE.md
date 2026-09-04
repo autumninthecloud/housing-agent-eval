@@ -136,9 +136,9 @@ deliberate reversal of Phase 1's fixed `NOVIssuedDate ≥ 2025-01-01` cutoff,
 which was correct for a one-time static comparison but wrong for an ongoing
 live pipeline: a fixed cutoff would let `data/live/` grow unbounded and
 dilute anomaly/trend detection with increasingly stale, mostly-closed cases.
-Full historical fidelity beyond the 12-month window is preserved via the
-dated history snapshots (below), so the rolling window costs nothing in
-terms of reproducibility — it only bounds what counts as "current."
+Note this window only bounds what counts as "current" in the canonical
+files — it doesn't preserve older records anywhere else; see Storage design
+below for why a separate historical archive was deliberately not built.
 
 - HPD: `NOVIssueDate ≥ today − 365d`
 - 311: `created_date ≥ today − 365d`, `agency = 'HPD'`
@@ -213,36 +213,57 @@ is not a reliable "this row's content actually changed" signal on this
 dataset. Documented here so this dead end isn't re-discovered and re-tested
 later.
 
-### Storage design: upsert current + immutable dated history
+### Storage design: upsert current only, committed weekly — no history archive
 
 Because both datasets are mutable (existing records get status updates, not
 just new records appended), naive append-only storage would create duplicate
 rows for the same entity every time its status changes — silently corrupting
-any count-based analysis. Two files per dataset instead:
+any count-based analysis. Storage is a single **canonical current file** per
+dataset, one row per entity ID, **upserted** each run (new IDs added,
+existing IDs overwritten if the record's status/date is newer). This is the
+analysis-ready file the insight agent and any dashboarding reads from.
 
-1. **Canonical current file** — one row per entity ID, **upserted** each run
-   (new IDs added, existing IDs overwritten if the record's status/date is
-   newer). This is the analysis-ready file the insight agent and any
-   dashboarding reads from.
-   - `data/live/hpd_violations_current.csv`
-   - `data/live/311_complaints_current.csv`
+- `data/live/hpd_violations_current.csv`
+- `data/live/311_complaints_current.csv`
 
-2. **Dated history snapshot** — a full, trimmed-column snapshot written
-   once per run, under its own date, **never modified after write**. This is
-   what preserves reproducibility (anyone can rebuild the exact state of the
-   data as of any given run) without the canonical file growing unbounded.
-   - `data/live/history/hpd_YYYY-MM-DD.csv`
-   - `data/live/history/311_YYYY-MM-DD.csv`
+**No dated history snapshots are written.** An earlier version of this
+design called for an immutable per-run snapshot archive
+(`data/live/history/{dataset}_YYYY-MM-DD.csv`) for reproducibility. That was
+dropped after sizing it against the real data volume: at measured row counts
+(~1.6-1.8M rows/dataset in the trailing-year window), each dataset's snapshot
+alone runs ~180-190MB, and since a history archive is by definition never
+pruned, committing it would add that much to the repo *every single run*,
+indefinitely — there's no natural point where that stops being true, so it
+isn't a "grows for a while then levels off" cost, it's genuinely unbounded
+over the pipeline's ongoing operation. Weighed against that, canonical
+current-state files (bounded by the rolling window, overwritten in place
+rather than accumulating) plus `weekly_manifest.json` and the insight agent's
+narrative output are what get committed each run — this keeps the repo
+lightweight and prioritizes an accurate *current* state over long-term
+archival of every past state. If historical analysis beyond "current state"
+is ever needed, that's a distinct, deliberately-scoped feature to design
+then (e.g. an external store with its own retention policy), not something
+to half-build into the weekly commit path now.
+
+One real consequence: dropping history/ removed the only signal the refresh
+script had for "when did this dataset last succeed," which the 311
+split-query strategy depends on. That signal now comes from the
+**previously-committed `weekly_manifest.json`** instead (see Handoff section
+below) — this is also what makes it work correctly on GitHub Actions, where
+each run gets a fresh checkout with no local run history at all; a
+local-only history directory would have appeared to work when run by hand
+but silently broken (falling back to a full re-fetch every run) the moment
+it ran in CI.
 
 Per `README.md`, Phase 2's live schema is not subject to Phase 1's 5-column
 restriction — column sets below were chosen for what the insight agent
 needs (anomaly flagging, narrative, potential mapping), not parity with
 Phase 1's static file.
 
-**HPD canonical/history schema:** `ViolationID, BoroID, Zip, Latitude,
+**HPD canonical schema:** `ViolationID, BoroID, Zip, Latitude,
 Longitude, Class, NOVIssueDate, CurrentStatus, CurrentStatusDate`
 
-**311 canonical/history schema:** `unique_key, agency, complaint_type,
+**311 canonical schema:** `unique_key, agency, complaint_type,
 descriptor, borough, incident_zip, latitude, longitude, created_date,
 closed_date, status`
 
@@ -262,10 +283,10 @@ closed_date, status`
   HPD and 311 are pulled and upserted independently; one dataset's API
   failure does not block or affect the other. Within a single dataset,
   "no partial writes" still holds strictly — if a dataset's pull fails
-  partway through, that dataset's canonical file and history snapshot are
-  left completely untouched for this run (no half-written state), and the
-  manifest records that dataset as failed for this run rather than silently
-  reusing stale data as if it were fresh. This was a deliberate choice over
+  partway through, that dataset's canonical file is left completely
+  untouched for this run (no half-written state), and the manifest records
+  that dataset as failed for this run rather than silently reusing stale
+  data as if it were fresh. This was a deliberate choice over
   whole-run atomicity: 311 (a 28M-row citywide feed) is more likely to have
   a flaky pull than HPD, and a whole-run failure policy would let 311's
   instability block otherwise-healthy HPD updates indefinitely. The
@@ -308,9 +329,27 @@ than being all-or-nothing:
 ```
 
 A dataset with `status: "failed"` contributes no rows to the manifest and
-its canonical file/history snapshot are untouched this run (see Failure
-handling above) — `last_successful_run` lets the insight agent (and anyone
-reading the manifest) know how stale that dataset currently is.
+its canonical file is untouched this run (see Failure handling above) —
+`last_successful_run` lets the insight agent (and anyone reading the
+manifest) know how stale that dataset currently is.
+
+**`last_successful_run` is read from the previously-committed manifest, not
+from local files.** Since `data/live/history/` was dropped (see Storage
+design above), there's no local per-run snapshot to scan for "when did this
+last succeed." Instead, before writing this run's manifest, the script reads
+whatever manifest is already sitting at `data/live/weekly_manifest.json`
+from the *previous* run: if a dataset's entry there shows `status:
+"success"`, that manifest's own `run_date` becomes this dataset's
+`last_successful_run`; if it shows `"failed"`, its own `last_successful_run`
+is carried forward unchanged (correctly chaining through any number of
+consecutive failures back to the last real success, or to `null` if it has
+never once succeeded). This is why the manifest has to be part of what's
+committed each run — a value that only ever lived in an uncommitted local
+file would vanish on GitHub Actions' next fresh checkout, silently forcing
+every run back to a full-window re-fetch. Verified with a live two-run test:
+run 1 (no prior manifest) fetched the full window; run 2, reading run 1's
+manifest, correctly narrowed its "new since" cutoff to run 1's date instead
+of falling back to the full window again.
 
 **Design rationale:** the script already computes the new/updated ID sets
 in memory while performing the upsert, and already has the full row data at
@@ -349,5 +388,10 @@ entirely in that case (nothing to analyze).
 ## Where to start
 
 1. For Phase 1 (complete), reference work is in `data/static/` and `outputs/`; subagent definitions are in `.claude/agents/`.
-2. For Phase 2, work is not yet started — see "Phase 2 design (locked, pre-implementation)" above for the full spec before writing the refresh script.
+2. For Phase 2, the refresh script (`scripts/socrata_pipeline.py`,
+   `scripts/refresh_weekly.py`) is implemented and validated against the live
+   API — see the "Pull strategy" and "Storage design" subsections above for
+   what changed from the original design during implementation. Not yet done:
+   the GitHub Actions workflow, the first production backfill into
+   `data/live/`, and the insight agent.
 3. Log metrics and findings in markdown files at the repo root (e.g., `results.md`, `failure-analysis.md`, `governance-audit.md`).
