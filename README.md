@@ -114,6 +114,15 @@ file instead of re-scanning the full canonical dataset. The agent only runs
 if a manifest exists for that run, which doubles as the enforcement
 mechanism for the pipeline's fail-fast rule (no partial writes on error).
 
+**Pull strategy differs by dataset, deliberately.** Testing against the live
+API found a full 365-day re-fetch of the 311 dataset (28M+ rows citywide)
+costs ~3 hours/week regardless of page size — the `WHERE` filter itself is
+the fixed cost, not pagination. 311 now runs two smaller queries per week
+("new since last success" + "still-open status recheck") instead, cutting
+that to ~10-15 minutes; HPD's smaller table stays a single full-window query.
+Full numbers, the accepted risk this trades for, and a rejected `:updated_at`
+approach are in `CLAUDE.md`'s Phase 2 design section.
+
 **Infra:** GitHub Actions cron (public repo, free, uncapped), manual
 `workflow_dispatch` also enabled for testing, NYC Open Data app token stored
 as a GitHub Actions secret (never committed).
@@ -144,12 +153,14 @@ logged lessons, spanning data-schema scoping, model pinning, skill-invocation
 risks, and the specific spec-adherence failure behind multi-agent's lower
 score).
 
-**Phase 2: design complete, implementation not yet started.** Datasets,
-schema, storage design (upsert + dated history snapshots), the rolling
-12-month window, the manifest-based handoff to the insight agent, and the
-GitHub Actions cron infrastructure are all locked — see the Phase 2 design
-summary above and `CLAUDE.md` for full detail. Next step is writing the
-deterministic refresh script.
+**Phase 2: refresh script implemented and validated against the live API,
+not yet deployed.** `scripts/socrata_pipeline.py` and `scripts/refresh_weekly.py`
+implement the locked design (datasets, upsert + dated history snapshots,
+rolling 12-month window, manifest-based handoff), plus a pull-strategy fix
+found by actually running the script against live Socrata data — see the
+Phase 2 design summary above and `CLAUDE.md` for full detail. Not yet done:
+the GitHub Actions workflow wiring the script to a weekly cron, the first
+real production backfill into `data/live/`, and the insight agent itself.
 
 **Phase 3: not yet started.** The `data-cleaner` spec-adherence failure from
 Phase 1, and the Inter-Agent Misalignment gap identified in the MAST pass
