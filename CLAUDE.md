@@ -188,11 +188,20 @@ closed_date, status`
   functionally an API key (static, identifies the calling app, raises the
   shared rate-limit ceiling) despite Socrata's "token" naming — it does not
   grant access beyond what's already public.
-- **Failure handling:** fail the whole run on any pull error, no partial
-  writes. If either dataset's pull fails, neither canonical file nor the
-  manifest is updated for that run. Log the failure clearly. This is a
-  stricter rule than "log and continue" — chosen so a partial/corrupted
-  update can never silently become the new "current" baseline.
+- **Failure handling — independent per dataset, atomic within each dataset:**
+  HPD and 311 are pulled and upserted independently; one dataset's API
+  failure does not block or affect the other. Within a single dataset,
+  "no partial writes" still holds strictly — if a dataset's pull fails
+  partway through, that dataset's canonical file and history snapshot are
+  left completely untouched for this run (no half-written state), and the
+  manifest records that dataset as failed for this run rather than silently
+  reusing stale data as if it were fresh. This was a deliberate choice over
+  whole-run atomicity: 311 (a 28M-row citywide feed) is more likely to have
+  a flaky pull than HPD, and a whole-run failure policy would let 311's
+  instability block otherwise-healthy HPD updates indefinitely. The
+  atomicity guarantee that actually matters — never let a canonical file
+  end up half-updated — is preserved either way; what changed is only the
+  scope of what must succeed together.
 - **Trigger:** GitHub Actions scheduled workflow (`on.schedule.cron`, weekly),
   with `workflow_dispatch` also enabled so runs can be triggered manually for
   testing without waiting a week. Repo is public, so Actions minutes are free
@@ -202,23 +211,36 @@ closed_date, status`
 
 ### Handoff to the insight agent: `weekly_manifest.json`
 
-The refresh script's last step (only reached if both pulls and both
-upserts succeeded) is writing a manifest that the insight agent reads
-instead of the full canonical files:
+The refresh script's last step writes a manifest that the insight agent
+reads instead of the full canonical files. Per the per-dataset failure model
+above, the manifest reports status independently for each dataset rather
+than being all-or-nothing:
 
 ```json
 {
   "run_date": "2026-09-06",
-  "new_count": 142,
-  "updated_count": 38,
-  "total_current": 1048713,
-  "new_violations": [ { ...full row... } ],
-  "updated_violations": [ { ...full row... } ]
+  "datasets": {
+    "hpd": {
+      "status": "success",
+      "new_count": 142,
+      "updated_count": 38,
+      "total_current": 1048713,
+      "new_violations": [ { ...full row... } ],
+      "updated_violations": [ { ...full row... } ]
+    },
+    "311": {
+      "status": "failed",
+      "error": "HTTP 503 from Socrata",
+      "last_successful_run": "2026-08-30"
+    }
+  }
 }
 ```
 
-(311's manifest follows the same shape with `new_complaints`/
-`updated_complaints`.)
+A dataset with `status: "failed"` contributes no rows to the manifest and
+its canonical file/history snapshot are untouched this run (see Failure
+handling above) — `last_successful_run` lets the insight agent (and anyone
+reading the manifest) know how stale that dataset currently is.
 
 **Design rationale:** the script already computes the new/updated ID sets
 in memory while performing the upsert, and already has the full row data at
@@ -229,16 +251,24 @@ more expensive, slower, and more error-prone part of the pipeline per
 Phase 1's own findings, work is deliberately pushed onto the cheap
 deterministic script rather than the costly agent step.
 
-**Insight agent trigger condition:** the agent should only run if this run's
-`weekly_manifest.json` was successfully written. This doubles as the
-enforcement mechanism for the fail-fast rule above — no separate "did the
-refresh succeed" check is needed, since a failed run never produces a
-manifest.
+**Insight agent trigger condition:** the agent should run whenever
+`weekly_manifest.json` exists for this run **and** at least one dataset
+within it has `status: "success"` — it does not require every dataset to
+have succeeded. The agent reasons only over datasets marked successful, and
+should note in its narrative when a dataset is missing/stale this week
+(e.g. "311 data unavailable this run, last updated 2026-08-30") rather than
+treating a partial pipeline outage as if nothing happened. The manifest is
+still only written after the refresh script's per-dataset work completes —
+a run where every dataset failed produces a manifest with no successful
+datasets, and the agent should skip running narrative/anomaly generation
+entirely in that case (nothing to analyze).
 
 ### Insight agent
 
 - **Single agent** (see Scope decision above) — not orchestrator + subagents.
-- Runs only after a successful refresh (manifest exists).
+- Runs whenever a manifest exists with at least one successful dataset (see
+  Handoff section above for the exact trigger condition and partial-failure
+  handling).
 - Reads `weekly_manifest.json` only, not the full canonical files — keeps
   the agent's input small and bounded regardless of how large the canonical
   files grow over time.
