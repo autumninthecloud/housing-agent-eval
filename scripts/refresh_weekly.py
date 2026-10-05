@@ -33,12 +33,22 @@ Two modes:
   configs it's given) — a split-mode job's caller is responsible for
   collecting that file too.
 
+--window-days overrides every selected config's rolling window (normally
+365). Intended for a fast dry run — a window of a few days fetches a tiny
+slice instead of the full year, exercising the whole pipeline (fetch,
+upsert, signals-vs-baseline, manifest write) in minutes instead of hours.
+Never use a short window for a real production run: it would make
+`total_current` and the baseline-relative signals reflect only that
+narrow slice, not the dataset's actual rolling-year state.
+
 Usage:
     python scripts/refresh_weekly.py
     python scripts/refresh_weekly.py --dataset hpd --deadline-minutes 120 \
         --output data/live/partial_manifest_hpd.json
     python scripts/refresh_weekly.py --dataset 311 --deadline-minutes 270 \
         --output data/live/partial_manifest_311.json
+    python scripts/refresh_weekly.py --dataset hpd --window-days 3 \
+        --deadline-minutes 10 --output /tmp/dry_run_hpd.json
 
 Requires NYC_OPEN_DATA_APP_TOKEN to be set in the environment (a GitHub
 Actions repository secret when run in CI; export it locally for manual runs).
@@ -54,6 +64,11 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+
+try:
+    import resource  # Unix-only (ubuntu-latest runners); absent on Windows.
+except ImportError:
+    resource = None
 
 from socrata_pipeline import (
     DatasetConfig,
@@ -152,7 +167,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Where to write this run's result. Only meaningful with "
         "--dataset; defaults to data/live/partial_manifest_{dataset}.json.",
     )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=None,
+        help="Override every selected config's rolling window (normally "
+        "365). For fast dry runs only — see module docstring.",
+    )
     return parser.parse_args(argv)
+
+
+def _log_peak_memory() -> None:
+    """Logs this process's peak resident set size. Not idle curiosity: an
+    earlier bug (see socrata_pipeline.py's upsert_rows docstring) doubled
+    peak memory on a multi-million-row pull and caused a real OOM kill
+    during HPD's first bootstrap — worth watching on every run, especially
+    on a CI runner that may be more memory-constrained than a local
+    machine. No-ops on Windows (no `resource` module); ubuntu-latest
+    runners are Linux, where this is always available."""
+    if resource is None:
+        return
+    # ru_maxrss is KB on Linux (the only platform this actually runs on).
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    print(f"[memory] peak RSS this process: {peak_kb / 1024:.1f} MB", file=sys.stderr)
 
 
 def main(argv: list[str] = None) -> int:
@@ -162,6 +199,7 @@ def main(argv: list[str] = None) -> int:
         app_token = get_app_token()
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        _log_peak_memory()
         return 2
 
     if args.dataset:
@@ -180,6 +218,12 @@ def main(argv: list[str] = None) -> int:
             else DEFAULT_COMBINED_DEADLINE_MINUTES
         )
         output_path = None  # writes the combined canonical manifest instead
+
+    if args.window_days is not None:
+        for config in configs:
+            config.window_days = args.window_days
+        print(f"[dry-run override] window_days={args.window_days} for: "
+              f"{', '.join(c.name for c in configs)}", file=sys.stderr)
 
     deadline = time.monotonic() + deadline_minutes * 60
     manifest = run_all_datasets(configs, app_token, deadline=deadline)
@@ -206,6 +250,8 @@ def main(argv: list[str] = None) -> int:
                 f"(last successful run: {entry.get('last_successful_run') or 'never'})",
                 file=sys.stderr,
             )
+
+    _log_peak_memory()
 
     if not any_success:
         print("ERROR: every dataset run here failed.", file=sys.stderr)

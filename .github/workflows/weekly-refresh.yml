@@ -20,7 +20,16 @@ concurrency:
 on:
   schedule:
     - cron: "0 6 * * 0" # Sunday 06:00 UTC
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: run the full pipeline (fetch, merge, insight agent) but skip opening a PR"
+        type: boolean
+        default: false
+      window_days:
+        description: "Override the rolling window in days (e.g. 3) for a fast dry run. Leave blank for the real 365-day window — never use a short window on a real run."
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -66,10 +75,13 @@ jobs:
         id: refresh
         env:
           NYC_OPEN_DATA_APP_TOKEN: ${{ secrets.NYC_OPEN_DATA_APP_TOKEN }}
+          WINDOW_DAYS: ${{ inputs.window_days }}
         run: |
           set +e
+          WINDOW_ARG=""
+          if [ -n "$WINDOW_DAYS" ]; then WINDOW_ARG="--window-days $WINDOW_DAYS"; fi
           python scripts/refresh_weekly.py --dataset hpd --deadline-minutes 120 \
-            --output data/live/partial_manifest_hpd.json
+            --output data/live/partial_manifest_hpd.json $WINDOW_ARG
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -87,7 +99,7 @@ jobs:
       # only a brief cancellation grace period for this step to run at
       # all, and no guarantee it completes.
       - name: Upload HPD result
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: hpd-result
@@ -120,10 +132,13 @@ jobs:
         id: refresh
         env:
           NYC_OPEN_DATA_APP_TOKEN: ${{ secrets.NYC_OPEN_DATA_APP_TOKEN }}
+          WINDOW_DAYS: ${{ inputs.window_days }}
         run: |
           set +e
+          WINDOW_ARG=""
+          if [ -n "$WINDOW_DAYS" ]; then WINDOW_ARG="--window-days $WINDOW_DAYS"; fi
           python scripts/refresh_weekly.py --dataset 311 --deadline-minutes 270 \
-            --output data/live/partial_manifest_311.json
+            --output data/live/partial_manifest_311.json $WINDOW_ARG
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -134,7 +149,7 @@ jobs:
           exit 1
 
       - name: Upload 311 result
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: 311-result
@@ -146,11 +161,15 @@ jobs:
 
   finalize:
     needs: [refresh-hpd, refresh-311]
-    # Must run even if one or both refresh jobs failed or were cancelled
-    # by their own timeout — that's exactly the case merge_manifest.py
-    # exists to handle (synthesizing a "failed" entry for whichever
-    # dataset never reported in, instead of silently omitting it).
-    if: always()
+    # !cancelled(), not always(): must still run if a refresh job merely
+    # failed or hit its own timeout-minutes (that's exactly what
+    # merge_manifest.py exists to handle — synthesizing a "failed" entry
+    # for whichever dataset never reported in), but must NOT run if a
+    # human explicitly cancelled the whole workflow run — always() would
+    # barge ahead and open a PR nobody wanted even after an intentional
+    # abort. GitHub's own docs recommend this exact pattern for jobs that
+    # should survive a dependency's failure but respect real cancellation.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # Covers checkout + two artifact downloads + the merge script (all
     # fast) + the insight-agent step (capped at 20min internally, below)
@@ -159,6 +178,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Log run mode
+        run: |
+          echo "dry_run=${{ inputs.dry_run }}"
+          echo "window_days override=${{ inputs.window_days || '(none — full 365-day window)' }}"
 
       # continue-on-error: true on both downloads — a missing artifact
       # (its job never got to the upload step) must not fail this job;
@@ -232,7 +256,7 @@ jobs:
             --max-turns 15
 
       - name: Open PR with this run's changes
-        if: steps.merge.outputs.exit_code == '0' || steps.merge.outputs.exit_code == '1'
+        if: ${{ !inputs.dry_run && (steps.merge.outputs.exit_code == '0' || steps.merge.outputs.exit_code == '1') }}
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "Weekly live data refresh"

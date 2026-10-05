@@ -446,6 +446,32 @@ narrative could only describe that week's delta in isolation, with no
   manifest so staleness tracking doesn't silently break. `finalize` then
   runs the insight agent (if ≥1 dataset succeeded) and opens the PR, same
   as before.
+- **Pre-launch review additions, 2026-10-05** (same day as the job split
+  above, caught in a second review pass before the first real run):
+  - `finalize`'s `if:` is `${{ !cancelled() }}`, not `always()` — must
+    still run after a refresh job's ordinary failure or timeout (that's
+    the whole point of the job split), but must NOT barge ahead and open
+    a PR if a human explicitly cancels the workflow run.
+  - `workflow_dispatch` gained two inputs: `dry_run` (boolean — skips only
+    the final "Open PR" step; fetch, merge, and the insight agent all
+    still run, so a dry run genuinely exercises the artifact handoff
+    between jobs and the headless agent call) and `window_days` (string
+    override for `refresh_weekly.py --window-days`, threaded into both
+    refresh jobs — overrides a dataset's normal 365-day window to a few
+    days so a dry run finishes in minutes instead of hours). **Never use
+    a short window on a real run** — `total_current` and the
+    baseline-relative `signals` would reflect only that narrow slice.
+  - `refresh_weekly.py` logs peak resident set size (`resource.getrusage`,
+    Linux-only — a no-op on Windows, fine since this only needs to work on
+    the Actions runner) at the end of every invocation. Not idle curiosity:
+    a real OOM kill during HPD's first bootstrap (see `upsert_rows`'s
+    docstring) is exactly the failure mode worth watching for on a
+    CI runner, which may be more memory-constrained than a local machine.
+  - Each job's `timeout-minutes` margin above its own `--deadline-minutes`
+    (30 min for both HPD and 311) already exceeded the reviewed minimum
+    (deadline + ~10 min, covering one in-flight request's worst-case
+    REQUEST_TIMEOUT_SECONDS=600s overrun past the deadline check) — no
+    change needed there, just confirmed.
 
 ### Handoff to the insight agent: `weekly_manifest.json`
 
