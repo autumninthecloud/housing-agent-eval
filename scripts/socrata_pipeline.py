@@ -605,6 +605,13 @@ def run_dataset_refresh(
         return {
             "status": "success",
             "total_current": len(existing),
+            # Lets the insight agent (and anyone reading the manifest)
+            # tell a short test window apart from a real run without
+            # guessing — see insight-agent.md's "check window_days first"
+            # instruction.
+            "window_days": config.window_days,
+            "window_start": window_since.isoformat(),
+            "window_end": run_date.isoformat(),
         }
 
     except DatasetRefreshError as exc:
@@ -614,6 +621,7 @@ def run_dataset_refresh(
             # Carried straight through unchanged — a failed run has no new
             # success to report, so it passes along whatever it was given.
             "last_successful_run": last_successful_run,
+            "window_days": config.window_days,
         }
 
 

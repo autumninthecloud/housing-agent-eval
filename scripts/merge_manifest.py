@@ -124,8 +124,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     manifest = merge_manifests(args.expected, args.partials, args.previous_manifest)
     _write_json_atomic(args.manifest_output, manifest)
 
+    # baseline_summary.json is permanent and can't be regenerated (see
+    # data/live/BASELINE.md) — a strict no-op here (compare-then-write,
+    # not write-unconditionally) means finalize's "git diff --exit-code"
+    # guard can only ever fire on a genuine content change, never on a
+    # harmless re-serialization of identical data (key reordering, float
+    # rendering, etc.) that bytes-for-bytes differs from what's committed
+    # without actually meaning anything changed.
     baseline = merge_baselines(args.baselines)
-    if baseline:
+    if baseline and baseline != _read_json_if_exists(args.baseline_output):
         _write_json_atomic(args.baseline_output, baseline)
 
     any_success = any(

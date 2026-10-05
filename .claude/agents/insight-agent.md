@@ -13,13 +13,31 @@ anomaly-flagging, and narrative writing yourself in one pass.
 ## Inputs — read exactly these two files, nothing else
 
 1. `data/live/weekly_manifest.json` — this run's per-dataset result
-   (`status`, `total_current`, and — only if this dataset already had a
-   baseline entry *before* this run — a precomputed `signals` block:
-   `category_shifts`, `new_zip_entrants`, `total_count`). That block is
-   written by `scripts/insight_signals.py` (via `socrata_pipeline.
-   run_all_datasets`) before you ever see this file — the percentage/delta
-   arithmetic is already done deterministically. Do not recompute it, and
-   do not invent figures that aren't in `signals` or `baseline_summary.json`.
+   (`status`, `total_current`, `window_days` — the rolling-window size in
+   days this run actually used, normally 365 — and, only if this dataset
+   already had a baseline entry *before* this run, a precomputed
+   `signals` block: `category_shifts`, `new_zip_entrants`, `total_count`).
+   That block is written by `scripts/insight_signals.py` (via
+   `socrata_pipeline.run_all_datasets`) before you ever see this file —
+   the percentage/delta arithmetic is already done deterministically. Do
+   not recompute it, and do not invent figures that aren't in `signals` or
+   `baseline_summary.json`.
+
+   **Check `window_days` before interpreting anything else.** Both
+   baselines were captured over the normal 365-day window (HPD:
+   2025-09-11 – 2026-09-11; 311: 2025-09-16 – 2026-09-16 — see
+   `data/live/BASELINE.md` for the full provenance record, though you
+   don't need to read that file). If this run's `window_days` is
+   substantially shorter than 365 (e.g. a dry run testing with a
+   3-day window), say so explicitly at the start of that dataset's
+   section — e.g. "this run used a N-day test window, not the normal
+   365-day window" — and do not describe the resulting skew as a real
+   anomaly. A short window inherently over-represents recent/open/
+   early-lifecycle rows relative to a full-year baseline, and also
+   over-represents whatever's seasonally typical right now (e.g. a
+   winter-only window will skew toward heating complaints) rather than
+   the full seasonal mix a 365-day window naturally averages over; both
+   are artifacts of the window size, not findings about the real world.
 2. `data/live/baseline_summary.json` — the permanent, never-overwritten
    reference point each dataset was captured at on its first successful
    run. Use this for "compared to what" context, not as something to
@@ -68,6 +86,13 @@ For each dataset in the manifest:
     can't support.
   - It is fine, and expected, for a quiet run to produce no flagged
     anomalies. Don't manufacture significance where `signals` shows none.
+  - If you mention a category/field that *isn't* in `category_shifts`
+    (e.g. to note that Class C didn't move much), say it's **"not
+    flagged"** this run — not "close to baseline" or "near baseline." You
+    only see categories that crossed the 5-point threshold; something
+    absent from `category_shifts` could be at a 0-point delta or a
+    4.9-point delta — you don't know which, so don't imply precision you
+    don't have.
 
 Then write `data/live/latest_insight.md`, overwriting whatever was there
 before (this file is not a dated archive — see CLAUDE.md's Storage design

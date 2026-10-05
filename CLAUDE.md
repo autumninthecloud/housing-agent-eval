@@ -16,7 +16,7 @@ This project compares single-agent vs multi-agent LLM architectures on a housing
 - Phase 2 (live NYC data):
   - Implement a deterministic weekly refresh script for NYC HPD violations + 311 housing complaints.
   - Add one "insight agent" that only runs after the refresh to flag anomalies and generate narrative insights.
-  - See "Phase 2 design (locked, pre-implementation)" below for the full concrete spec.
+  - See "Phase 2 design (implemented)" below for the full concrete spec.
 
 - Phase 3 (governance audit):
   - Create a governance-audit skill that scores agent setups against NIST AI RMF agentic gaps (autonomy tier, tool scoping, delegation logging, override points).
@@ -25,7 +25,7 @@ This project compares single-agent vs multi-agent LLM architectures on a housing
 ## Data locations
 
 - `data/static/` – NYC Housing Maintenance Code Violations, filtered snapshot since 2025-01-01 (use NOVIssuedDate, not InspectionDate). Trimmed to 5 columns: ViolationID, Borough, Postcode, Class, NOVIssuedDate. This schema is fixed for Phase 1 only — do not add or remove columns once the single-agent/multi-agent comparison begins, since column count affects the cost/latency metrics being compared.
-- `data/live/` – NYC HPD violations + 311 complaints (incremental weekly pulls). Not subject to the Phase 1 column restriction. See "Phase 2 design (locked, pre-implementation)" below for the exact schema, storage layout, and rationale.
+- `data/live/` – NYC HPD violations + 311 complaints (full rolling-window re-fetch every run — see "Pull strategy" below for why this replaced an earlier incremental design). Not subject to the Phase 1 column restriction. See "Phase 2 design (implemented)" below for the exact schema, storage layout, and rationale.
 
 ## Model configuration
 
@@ -86,11 +86,15 @@ full run log, scores, and the MAST-taxonomy failure-mode tagging section
 artifact failure, and the cross-architecture failure-mode comparison table).
 `lessons-learned.md` has the 17 logged methodology decisions.
 
-## Phase 2 design (locked, pre-implementation)
+## Phase 2 design (implemented)
 
-This section records the finalized Phase 2 design, agreed before any code was
-written, so implementation can be checked against it rather than improvised
-mid-build.
+This section originally recorded the finalized Phase 2 design, agreed
+before any code was written, so implementation could be checked against
+it rather than improvised mid-build. It has since been updated in place
+multiple times as real implementation and operation (live API behavior,
+GitHub's push-size limit, three pre-launch review passes) revised parts
+of the original plan — those revisions are documented inline below, not
+hidden; this heading just no longer claims the design is pre-implementation.
 
 ### Scope decision: not a re-run of the Phase 1 comparison
 
@@ -321,8 +325,8 @@ unchanged) all confirmed.
 
 **Why this file matters beyond solving a size problem:** it's also the
 fixed reference point the insight agent needs to say anything about
-*change over time* — see Insight agent below. Without it, every week's
-narrative could only describe that week's delta in isolation, with no
+*change over time* — see Insight agent below. Without it, every run's
+narrative could only describe that run's own totals in isolation, with no
 "compared to what" to anchor against.
 
 ### Refresh script behavior
@@ -566,28 +570,34 @@ entirely in that case (nothing to analyze).
   Handoff section above for the exact trigger condition and partial-failure
   handling).
 - **Reads two files, both small and bounded — not the full canonical
-  files:**
-  1. `weekly_manifest.json` — that week's delta (new/updated rows, or a
-     bootstrap-run's aggregate-free summary counts — see Bootstrap baseline
-     above).
+  files, and never any raw rows:**
+  1. `weekly_manifest.json` — `status` and `total_current` per dataset,
+     plus (only when a baseline already existed before this run) a
+     `signals` block: this run's aggregate category/zip stats diffed
+     against the baseline, already computed deterministically before the
+     agent ever sees the file. There is no "delta" in the row-level sense
+     — both datasets fully re-fetch their rolling window every run (see
+     Pull strategy above), so there's no previous run's rows to diff
+     against; `signals` compares this run's *aggregate totals* to the
+     baseline's aggregate totals, not row-by-row.
   2. `data/live/baseline_summary.json` — the permanent, never-overwritten
      reference point each dataset was captured at on its first successful
      run.
 
   Reading only the manifest was the original design; it was extended to
-  also read the baseline once the bootstrap-manifest-size problem above
-  surfaced a gap in it — a delta *by itself* has no "compared to what."
-  `weekly_manifest.json` alone lets the agent describe what changed this
-  week, but not whether that change is notable — e.g. answering "is this
-  week's Class C share higher than where this zip started" requires the
-  baseline's `by_class`/concentration figures as the comparison point, not
-  just this week's delta. Both stay small and bounded regardless of how
-  large the canonical files grow: the manifest by construction (weekly
-  deltas are small once past the bootstrap run), the baseline by
-  construction (fixed aggregate stats, written once, never grows).
+  also read the baseline once it became clear a bare status/count by
+  itself has no "compared to what." `weekly_manifest.json` alone lets the
+  agent see this run's totals, but not whether they're notable — e.g.
+  answering "is this run's Class C share higher than where this dataset
+  started" requires the baseline's `by_class`/concentration figures as the
+  comparison point. Both stay small and bounded regardless of how large
+  the canonical files grow: the manifest by construction (aggregate stats
+  only, never raw rows, for any run — see Bootstrap baseline above), the
+  baseline by construction (fixed aggregate stats, written once, never
+  grows).
 - Responsibilities per original Phase 2 scoping: flag anomalies, generate
-  short narrative insights — now informed by both the current delta and the
-  baseline it's changing relative to.
+  short narrative insights — informed by comparing this run's aggregate
+  stats against the baseline, not by inspecting individual rows.
 
 **Implemented.** The agent definition is `.claude/agents/insight-agent.md`.
 Per Phase 1's own finding that agent reasoning is the expensive,

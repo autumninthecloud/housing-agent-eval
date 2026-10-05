@@ -15,7 +15,7 @@ This repo contains a three-phase project:
 
 2. **Phase 2 – Live weekly pipeline (NYC data):**
    Use NYC HPD housing violations and 311 housing complaints via NYC Open Data as a live feed.
-   - A deterministic script pulls new records and recomputes metrics weekly.
+   - A deterministic script recomputes aggregates from a full-window pull every week.
    - A lightweight "insight agent" runs on top to flag anomalies and generate short narratives.
 
 3. **Phase 3 – Governance audit:**
@@ -182,13 +182,14 @@ reads the manifest and baseline and writes `data/live/latest_insight.md`;
 deterministically rather than leaving that to the agent — verified offline
 across a simulated two-run sequence — see `CLAUDE.md`'s Phase 2 design
 section for full detail. The GitHub Actions workflow
-(`.github/workflows/weekly-refresh.yml`) is now built and partially
-verified: a dry run (short `window_days`, `dry_run: true`) confirmed the
-three-job split, the artifact handoff between jobs, the baseline-change
-guard, and the insight agent's headless invocation all work end-to-end —
-see `CLAUDE.md`'s "Where to start" section for that run's details
-(including an artifact-path bug found and fixed along the way) and what's
-still open: a real full-window production run.
+(`.github/workflows/weekly-refresh.yml`) is now built. A dry run (short
+`window_days`, `dry_run: true`) confirmed the three-job split, the
+artifact handoff between jobs, the baseline-change guard, and the
+insight agent's headless invocation all work end-to-end — see
+`CLAUDE.md`'s "Where to start" section for that run's details (including
+an artifact-path bug found and fixed along the way). **The first real,
+full-window production run is in progress as of 2026-10-05** — not yet
+landed; status to be updated once it completes.
 
 **Phase 3: not yet started.** The `data-cleaner` spec-adherence failure from
 Phase 1, and the Inter-Agent Misalignment gap identified in the MAST pass

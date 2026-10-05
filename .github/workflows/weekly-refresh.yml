@@ -4,8 +4,8 @@ name: Weekly live data refresh
 # and 311 as two independent jobs, merges their results
 # (scripts/merge_manifest.py), runs the insight agent
 # (.claude/agents/insight-agent.md) if at least one dataset succeeded, then
-# opens a PR with whatever changed. See CLAUDE.md's "Phase 2 design (locked,
-# pre-implementation)" for the manifest/exit-code contract this depends on.
+# opens a PR with whatever changed. See CLAUDE.md's "Phase 2 design
+# (implemented)" for the manifest/exit-code contract this depends on.
 
 # Prevents a manual workflow_dispatch from overlapping an in-progress
 # scheduled run against the same Socrata app token — two simultaneous heavy
@@ -85,10 +85,18 @@ jobs:
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Fail job if HPD refresh could not start
-        if: steps.refresh.outputs.exit_code == '2'
+      # Was previously only `== '2'` (couldn't even start) — exit_code 1
+      # (ran, but genuinely failed to fetch/upsert, e.g. retries or the
+      # deadline exhausted) left this job showing green in the Actions
+      # tab despite HPD's data having failed. Failing on anything but '0'
+      # makes the job status an honest signal of whether the dataset
+      # actually succeeded. finalize still runs either way (if:
+      # !cancelled() — a job failure isn't a cancellation).
+      - name: Fail job if HPD refresh did not succeed
+        if: steps.refresh.outputs.exit_code != '0'
         run: |
-          echo "refresh_weekly.py exited 2 (could not start — check NYC_OPEN_DATA_APP_TOKEN)." >&2
+          echo "refresh_weekly.py exited ${{ steps.refresh.outputs.exit_code }} for HPD." >&2
+          echo "2 = could not even start (check NYC_OPEN_DATA_APP_TOKEN); 1 = ran but the dataset failed to fetch/upsert — see this job's own log above for the actual error." >&2
           exit 1
 
       # if: always() so this still runs after a failed/deadline-exceeded
@@ -142,10 +150,14 @@ jobs:
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Fail job if 311 refresh could not start
-        if: steps.refresh.outputs.exit_code == '2'
+      # Same reasoning as HPD's job: fail on anything but '0', not just
+      # '2', so the Actions tab actually reflects whether 311's data
+      # succeeded rather than just whether the step could start.
+      - name: Fail job if 311 refresh did not succeed
+        if: steps.refresh.outputs.exit_code != '0'
         run: |
-          echo "refresh_weekly.py exited 2 (could not start — check NYC_OPEN_DATA_APP_TOKEN)." >&2
+          echo "refresh_weekly.py exited ${{ steps.refresh.outputs.exit_code }} for 311." >&2
+          echo "2 = could not even start (check NYC_OPEN_DATA_APP_TOKEN); 1 = ran but the dataset failed to fetch/upsert — see this job's own log above for the actual error." >&2
           exit 1
 
       - name: Upload 311 result
@@ -252,6 +264,22 @@ jobs:
             exit 1
           fi
 
+      # merge_manifest.py's own exit_code captures the "every dataset
+      # failed" case (any_success == False), but by itself that's just
+      # output written to $GITHUB_OUTPUT — the job still finishes "green"
+      # unless something explicitly fails it. Without this, a run where
+      # both datasets failed previously showed success everywhere in the
+      # Actions tab and still opened a PR for a run with nothing but error
+      # messages in it. The insight agent and PR step are already skipped
+      # on exit_code '1' (see their own `if:` conditions below) — this is
+      # what makes the job itself, and therefore the whole workflow run,
+      # show red so a total failure is visible without reading logs.
+      - name: Fail job if every dataset failed this run
+        if: steps.merge.outputs.exit_code == '1'
+        run: |
+          echo "Every dataset failed this run — see the merged-result artifact's weekly_manifest.json for per-dataset error fields. No insight agent run, no PR opened." >&2
+          exit 1
+
       - name: Set up Node.js (for Claude Code CLI)
         if: steps.merge.outputs.exit_code == '0'
         uses: actions/setup-node@v4
@@ -271,11 +299,12 @@ jobs:
       # (there's no human in this loop to approve one). timeout-minutes is
       # independent of --max-turns: --max-turns bounds agent loop
       # iterations, not wall-clock time, so a single hung turn (API outage,
-      # stuck tool call) still needs its own clock.
-      #
-      # NOT YET VERIFIED end-to-end in this environment — run this workflow
-      # once via workflow_dispatch and check the step's log + the resulting
-      # PR diff before trusting the Sunday cron.
+      # stuck tool call) still needs its own clock. --model pins this
+      # explicitly — found missing during a 2026-10-05 review (the dry run
+      # had already succeeded, but with no --model flag it ran on whatever
+      # the CLI/account defaults to, not something this workflow actually
+      # controlled), matching insight-agent.md's own `model: sonnet`
+      # frontmatter and this project's general model-pinning stance.
       - name: Run insight agent
         if: steps.merge.outputs.exit_code == '0'
         timeout-minutes: 20
@@ -283,6 +312,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           claude -p "Read .claude/agents/insight-agent.md and carry out exactly the instructions in it now. Do not use the Task tool or delegate to any other agent — follow the instructions directly yourself, reading only data/live/weekly_manifest.json and data/live/baseline_summary.json, and writing data/live/latest_insight.md." \
+            --model claude-sonnet-5 \
             --permission-mode acceptEdits \
             --max-turns 15
 
@@ -302,19 +332,24 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Only exit_code '0' (at least one dataset succeeded), not '1' too —
+      # a run where every dataset failed now fails the job outright (see
+      # above) rather than opening a PR with nothing but error messages
+      # in it. A failed run's details live in the merged-result artifact,
+      # not in a PR.
       - name: Open PR with this run's changes
-        if: ${{ !inputs.dry_run && (steps.merge.outputs.exit_code == '0' || steps.merge.outputs.exit_code == '1') }}
+        if: ${{ !inputs.dry_run && steps.merge.outputs.exit_code == '0' }}
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "Weekly live data refresh"
           title: "Weekly live data refresh"
           body: |
             Automated run of `scripts/refresh_weekly.py` (HPD and 311 as
-            separate jobs, merged by `scripts/merge_manifest.py`)
-            ${{ steps.merge.outputs.exit_code == '0' && 'plus the insight agent' || '(every dataset failed this run — see weekly_manifest.json for errors; insight agent was skipped)' }}.
+            separate jobs, merged by `scripts/merge_manifest.py`) plus the
+            insight agent.
 
             Check `data/live/weekly_manifest.json` for per-dataset status and
-            `data/live/latest_insight.md` for this run's narrative, if generated.
+            `data/live/latest_insight.md` for this run's narrative.
           branch: weekly-refresh
           branch-suffix: timestamp
           delete-branch: true
