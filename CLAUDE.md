@@ -187,6 +187,36 @@ top of them was reversed):
   same full-re-fetch approach for HPD, at `page_size=50000`, needs only ~36
   pages at ~66.5s/page → **~40 minutes/week**.
 
+**Correction from the first real production run, 2026-10-05.** The ~33/~36
+page counts above assumed row counts (~1.77M HPD, ~1.63M 311) from a
+2026-09-04 `count(*)` measurement that this run's actual totals don't
+support — HPD came back at 892,922 rows (18 pages at `page_size=50000`)
+and 311 at 903,945 (19 pages), both essentially matching their original
+bootstrap totals (886,413 and 893,516) rather than the larger September
+estimate. That 2026-09-04 figure was never reconciled against an actual
+achieved pull and now looks wrong by roughly 2x — three independent real
+pulls (two bootstraps, one full production run) all land in the
+886K–904K range for both datasets, so treat that range, not the
+September `count(*)` number, as the trustworthy one going forward.
+
+Actual wall-clock this run: **HPD 53 minutes, 311 44 minutes** (parallel
+jobs, so total runtime was ~54 minutes, not a sum). Per-page cost moved
+in *opposite* directions from the numbers above: HPD ran at ~177s/page
+(vs. ~66.5s/page measured in September — notably slower), 311 at
+~139s/page (vs. ~267-350s/page measured in September — notably faster).
+Combined with the corrected, smaller page counts, this means Socrata's
+per-page cost is not a fixed property of either table — it swings
+significantly run to run, in either direction, plausibly just shared-
+platform load variance rather than anything specific to this project's
+queries. Treat the "~3 hours" / "~40 minutes" figures above as historical
+context for *why* the split-query design once seemed worth building, not
+as a reliable prediction for any future run. The current deadlines
+(120min HPD, 270min 311) and job timeouts (150min/300min) still have
+large margins over these real numbers either way, so nothing needed
+retuning *yet* — but this is worth revisiting once a few more real runs
+accumulate, rather than trusting either the September or this run's
+numbers as the permanent baseline.
+
 **History — the split-query design that was built, tested, and then
 reversed:** 311 originally ran two queries per run instead of one
 full-window query — *(1) new since last successful run* and *(2) still-open
@@ -416,8 +446,15 @@ narrative could only describe that run's own totals in isolation, with no
   above): 311 (~33 pages, ~300-350s/page clean) failing on its last page
   costs ~32 successful pages + one ~63-min failing page ≈ **~4.1-4.5
   hours** worst case; HPD (~36 pages, ~66.5s/page clean) adds a smaller
-  amount if it degrades too. A genuinely pathological case (every page on
-  a dataset maxing out every retry) can still mathematically exceed
+  amount if it degrades too. **Correction, 2026-10-05**: the real page
+  counts are smaller than assumed here (~18-19 pages each, not ~33-36 —
+  see Pull strategy's correction note), so recomputed worst case is
+  lower: 311 ≈ 18 successful pages + one ~63-min failing page ≈ **~2.8
+  hours**; HPD ≈ 17 successful pages + one ~63-min failing page ≈ **~1.4
+  hours**. Both comfortably inside their current deadlines either way —
+  not updating the deadline numbers themselves yet, just correcting the
+  math behind them. A genuinely pathological case (every page on a
+  dataset maxing out every retry) can still mathematically exceed
   GitHub's 360-minute hard cap for hosted runners — the in-script deadline
   doesn't prevent that, it just guarantees a clean, labeled failure well
   before GitHub's generic hard-kill would otherwise be what stops it.
@@ -692,14 +729,20 @@ if they need tuning once real weekly runs accumulate.
    window — that's expected, not a real finding, and future dry runs will
    produce the same kind of narrative.
 
-   **Still not verified**: a real, full-window (`window_days` blank)
-   production run — expected wall-clock is now `max(~40min HPD,
-   ~165-190min 311) + finalize overhead` ≈ **~3.2-3.3 hours**, not the
-   ~4 hours a sequential sum would suggest, since `refresh-hpd` and
-   `refresh-311` have no `needs:` on each other and run in parallel.
-   Trigger one real `workflow_dispatch` run (`dry_run: false`,
-   `window_days` blank), confirm actual wall-clock against that estimate,
-   and check the resulting PR before trusting the Sunday cron.
+   **First real production run: succeeded, 2026-10-05.** Actual wall-clock
+   was **~54 minutes** (HPD 53min, 311 44min, running in parallel as
+   designed) — far faster than the ~3.2-3.3hr estimate this section
+   previously carried, because that estimate's row-count assumption was
+   wrong (see Pull strategy's 2026-10-05 correction note: real page
+   counts are roughly half what was assumed). The PR was reviewed
+   (artifacts showed no errors) and merged. The cron can now be trusted
+   for its first scheduled Sunday run. One thing this run's manifest does
+   *not* have: `window_days`/`window_start`/`window_end` fields, since
+   the workflow ran on the commit before those were added (deliberately
+   held back from pushing until this run finished, to avoid `finalize`
+   checking out a different commit mid-run than `refresh-hpd`/
+   `refresh-311` had already used) — the next run, scheduled or manual,
+   will have them.
 
    **Resolved as of 2026-10-05** (previously logged here as unresolved):
    the two commits containing the first production bootstrap under the

@@ -169,8 +169,7 @@ logged lessons, spanning data-schema scoping, model pinning, skill-invocation
 risks, and the specific spec-adherence failure behind multi-agent's lower
 score).
 
-**Phase 2: refresh script and insight agent built and validated, not yet
-deployed on a schedule.** `scripts/socrata_pipeline.py` and
+**Phase 2: live and running on a schedule.** `scripts/socrata_pipeline.py` and
 `scripts/refresh_weekly.py` implement the locked design (datasets, rolling
 12-month window, manifest-based handoff), plus a storage redesign found by
 actually trying to push the first production bootstrap: canonical files
@@ -188,8 +187,8 @@ artifact handoff between jobs, the baseline-change guard, and the
 insight agent's headless invocation all work end-to-end — see
 `CLAUDE.md`'s "Where to start" section for that run's details (including
 an artifact-path bug found and fixed along the way). **The first real,
-full-window production run is in progress as of 2026-10-05** — not yet
-landed; status to be updated once it completes.
+full-window production run succeeded on 2026-10-05** (~54 minutes,
+reviewed and merged) — the weekly cron is now live.
 
 **Phase 3: not yet started.** The `data-cleaner` spec-adherence failure from
 Phase 1, and the Inter-Agent Misalignment gap identified in the MAST pass
