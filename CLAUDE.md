@@ -644,27 +644,69 @@ if they need tuning once real weekly runs accumulate.
    and add the resulting token under Settings → Secrets and variables →
    Actions). Also requires "Allow GitHub Actions to create and approve pull
    requests" enabled under Settings → Actions → General → Workflow
-   permissions, or the PR-creation step will fail even though the refresh
-   itself succeeded. **Not yet verified end-to-end** — the insight-agent
-   step's headless invocation (`claude -p ... --permission-mode
-   acceptEdits`) hasn't been run in this environment, and neither has the
-   three-job split itself (artifact upload/download between
-   `refresh-hpd`/`refresh-311` and `finalize`, and `merge_manifest.py`
-   operating on real GitHub Actions artifacts rather than local test
-   fixtures). The deadline/retry-budget logic and `merge_manifest.py`'s
-   merge behavior are verified offline (mocked fetch, fake clock,
-   synthetic missing-partial scenario — see test files from the 2026-10-05
-   session, not checked into the repo). Trigger one `workflow_dispatch`
-   run, confirm each job's actual wall-clock time against the ~40min/
-   ~165-190min expected-normal estimates above, and check the resulting PR
-   (manifest + narrative) before trusting the cron.
+   permissions, enabled and confirmed under Settings → Actions → General
+   → Workflow permissions (otherwise the PR-creation step fails even
+   though the refresh itself succeeded).
 
-   **Unresolved as of 2026-10-05**: local `main` has two older commits
-   (`eed2cc1`, `0c8d286`) that were never pushed to `origin/main` — they
-   contain the first production bootstrap under the old split-query design,
-   including the ~124MB 311 canonical CSV that's over GitHub's push limit
-   and is exactly the problem this redesign fixes. They need to be dealt
-   with (not pushed as-is) before this branch is brought in sync with
-   `origin/main` — see whether a `results.md`/`lessons-learned.md` entry
-   about this discovery is warranted once resolved.
+   **First dry-run verification, 2026-10-05.** Secrets confirmed set, then
+   ran `workflow_dispatch` with `dry_run: true` and `window_days: 3` (a
+   tiny window, so the whole pipeline exercises in minutes instead of
+   hours). First attempt: both `refresh-hpd` and `refresh-311` almost
+   certainly succeeded, but `finalize` reported both as
+   `"No partial manifest found"`. Root cause: `actions/upload-artifact@v4`
+   strips each upload's *least common ancestor* path before storing it —
+   the HPD/311 upload steps each list two files sharing `data/live/` as
+   their common parent, so the artifact actually stores them flattened
+   (`partial_manifest_hpd.json`, `baseline_summary.json`), not nested
+   under `data/live/` as the merge step's `--partial`/`--baseline` paths
+   assumed. Fixed the paths and added a "Log downloaded artifact
+   contents" step (`find` on both download dirs) so any future path
+   mismatch shows up directly in the log instead of another silent
+   "missing" guess. Documented here because it's exactly the kind of
+   artifact-handling gotcha worth not re-discovering later.
+
+   Second attempt, same inputs: fully green. Both datasets succeeded, the
+   "Guard against unintended baseline_summary.json changes" step passed
+   (no diff — confirming `write_baseline_entry_if_missing`'s no-op
+   behavior held under real GitHub Actions execution, not just the
+   offline tests), and the insight agent's headless invocation
+   (`claude -p ... --permission-mode acceptEdits`) produced a narrative
+   correctly scoped to the spec: explicit point-in-time framing (not a
+   trend claim), correctly judged the small new-zip-entrant counts as
+   *not* hotspots relative to baseline volumes, and correctly explained
+   why a short window skews toward open/early-lifecycle statuses rather
+   than treating that as an unexplained anomaly. No PR opened, confirming
+   `dry_run` correctly skips it. **One thing to remember about this
+   result, not a bug**: any short-`window_days` test run's narrative will
+   look dramatically "off vs. baseline" purely because of the tiny
+   window — that's expected, not a real finding, and future dry runs will
+   produce the same kind of narrative.
+
+   **Still not verified**: a real, full-window (`window_days` blank)
+   production run — expected wall-clock is now `max(~40min HPD,
+   ~165-190min 311) + finalize overhead` ≈ **~3.2-3.3 hours**, not the
+   ~4 hours a sequential sum would suggest, since `refresh-hpd` and
+   `refresh-311` have no `needs:` on each other and run in parallel.
+   Trigger one real `workflow_dispatch` run (`dry_run: false`,
+   `window_days` blank), confirm actual wall-clock against that estimate,
+   and check the resulting PR before trusting the Sunday cron.
+
+   **Resolved as of 2026-10-05** (previously logged here as unresolved):
+   the two commits containing the first production bootstrap under the
+   old split-query design (`eed2cc1`, `0c8d286` — including the ~124MB
+   311 canonical CSV over GitHub's push limit) were never pushed and were
+   replaced via `git reset --soft` + a clean recommit rather than rewritten
+   in place. That correctly dropped the oversized CSVs but also
+   disconnected `baseline_summary.json`'s real commit lineage from `main`
+   — `git log --follow` on it now only shows the replacement commit, not
+   the original 2026-09-11/2026-09-16 bootstrap dates. Content was
+   verified byte-identical at the time (diffed against the still-reachable
+   pre-reset commit). Rather than rewrite history again to restore the
+   lineage, that provenance is now recorded directly: `data/live/BASELINE.md`
+   (per-dataset capture dates, row counts, window coverage, original
+   commit hashes, SHA-256) plus a **local-only** branch,
+   `backup/pre-reset-phase2-bootstrap`, anchored at the original `0c8d286`
+   so those objects survive `git gc` instead of eventually falling out of
+   the reflog — this branch must never be pushed, since it still contains
+   the oversized CSVs in its tree.
 3. Log metrics and findings in markdown files at the repo root (e.g., `results.md`, `failure-analysis.md`, `governance-audit.md`).

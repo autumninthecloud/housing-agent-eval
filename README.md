@@ -182,11 +182,13 @@ reads the manifest and baseline and writes `data/live/latest_insight.md`;
 deterministically rather than leaving that to the agent — verified offline
 across a simulated two-run sequence — see `CLAUDE.md`'s Phase 2 design
 section for full detail. The GitHub Actions workflow
-(`.github/workflows/weekly-refresh.yml`) is now built — see `CLAUDE.md`'s
-"Where to start" section for the two repo secrets it needs, the one GitHub
-setting to check before its first run, the note that its insight-agent step
-isn't yet verified end-to-end, and an unresolved local-git-history item
-from before this storage redesign.
+(`.github/workflows/weekly-refresh.yml`) is now built and partially
+verified: a dry run (short `window_days`, `dry_run: true`) confirmed the
+three-job split, the artifact handoff between jobs, the baseline-change
+guard, and the insight agent's headless invocation all work end-to-end —
+see `CLAUDE.md`'s "Where to start" section for that run's details
+(including an artifact-path bug found and fixed along the way) and what's
+still open: a real full-window production run.
 
 **Phase 3: not yet started.** The `data-cleaner` spec-adherence failure from
 Phase 1, and the Inter-Agent Misalignment gap identified in the MAST pass
