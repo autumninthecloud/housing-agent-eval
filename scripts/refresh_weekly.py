@@ -187,9 +187,14 @@ def _log_peak_memory() -> None:
     runners are Linux, where this is always available."""
     if resource is None:
         return
-    # ru_maxrss is KB on Linux (the only platform this actually runs on).
+    # ru_maxrss's unit is platform-dependent (KB on Linux, bytes on macOS)
+    # — a classic source of silent off-by-1024 bugs. Logging the raw value
+    # with an explicit "KB" label (rather than converting to MB) keeps the
+    # number traceable to exactly what the OS reported, correct for the
+    # ubuntu-latest runners this actually runs on (and a no-op on Windows
+    # per the import guard above).
     peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    print(f"[memory] peak RSS this process: {peak_kb / 1024:.1f} MB", file=sys.stderr)
+    print(f"[memory] peak RSS this process: {peak_kb} KB (ru_maxrss, Linux units)", file=sys.stderr)
 
 
 def main(argv: list[str] = None) -> int:

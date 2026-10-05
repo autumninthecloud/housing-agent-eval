@@ -221,6 +221,25 @@ jobs:
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
+      # baseline_summary.json is permanent and, per data/live/BASELINE.md,
+      # cannot be regenerated — both currently-configured datasets already
+      # have an entry, so write_baseline_entry_if_missing's own no-op
+      # guard means it should never change again. merge_manifest.py still
+      # unconditionally re-writes it from the two uploaded job copies
+      # (see merge_baselines' docstring for why that's normally safe), so
+      # this is the actual enforcement: if the merged file differs at all
+      # from what's committed — including a short-window dry run's numbers
+      # masquerading as a real baseline — fail here, before anything else
+      # (insight agent, PR) can act on a changed baseline. Runs
+      # unconditionally, dry run or not.
+      - name: Guard against unintended baseline_summary.json changes
+        run: |
+          if ! git diff --exit-code data/live/baseline_summary.json; then
+            echo "ERROR: data/live/baseline_summary.json changed this run." >&2
+            echo "This file is permanent — see data/live/BASELINE.md. Any diff here is treated as a bug, not an update. Failing before the insight agent or PR step can act on it." >&2
+            exit 1
+          fi
+
       - name: Set up Node.js (for Claude Code CLI)
         if: steps.merge.outputs.exit_code == '0'
         uses: actions/setup-node@v4
