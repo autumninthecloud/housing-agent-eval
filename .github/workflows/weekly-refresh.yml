@@ -274,6 +274,22 @@ jobs:
             --permission-mode acceptEdits \
             --max-turns 15
 
+      # Uploaded unconditionally (not just on dry_run) so the merged
+      # manifest and narrative are always inspectable without waiting on
+      # the PR — and specifically so a dry run (which never opens a PR)
+      # still produces something to read, per the review process this
+      # workflow's first run is meant to follow.
+      - name: Upload merged result for inspection
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-result
+          path: |
+            data/live/weekly_manifest.json
+            data/live/latest_insight.md
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Open PR with this run's changes
         if: ${{ !inputs.dry_run && (steps.merge.outputs.exit_code == '0' || steps.merge.outputs.exit_code == '1') }}
         uses: peter-evans/create-pull-request@v6
