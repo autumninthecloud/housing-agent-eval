@@ -1,2 +1,8 @@
 __pycache__/
 *.tmp
+.env.local
+
+# Local working state for scripts/refresh_weekly.py — never committed, see
+# CLAUDE.md's Phase 2 "Storage design" (GitHub rejects pushes over 100MiB,
+# and these files are regularly larger than that).
+data/live/*.csv

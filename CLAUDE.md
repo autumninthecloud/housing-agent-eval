@@ -143,15 +143,26 @@ below for why a separate historical archive was deliberately not built.
 - HPD: `NOVIssueDate ≥ today − 365d`
 - 311: `created_date ≥ today − 365d`, `agency = 'HPD'`
 
-### Pull strategy: full re-fetch (HPD) vs. two-query split (311)
+### Pull strategy: full re-fetch every run, for both datasets
 
-The two datasets use **different pull strategies**, and this asymmetry is
-intentional, not inconsistent design — it's driven by measured per-query cost
-on each live dataset, not by row count (the two datasets' trailing-12-month
-row counts are actually comparable: ~1.77M for HPD vs. ~1.63M for 311, both
-measured 2026-09-04).
+**Current design: both HPD and 311 do a full rolling-window re-fetch every
+run.** This reverses an earlier 311-only incremental "split query"
+optimization (history below) — reversed not because the optimization
+didn't work (it did, and was measured and tested), but because of what it
+required: an incremental upsert against *last run's full canonical file*,
+which in turn required that file to persist between runs. It turned out
+that file couldn't be committed to git at all (see Storage design below —
+GitHub rejects pushes of files over 100MiB, and 311's canonical file is
+~124MB), and a persistence mechanism *outside* git (cache, release asset,
+external store) was judged not worth the complexity for a job that can
+simply afford to run longer instead. ~3 hours/week of runtime on a free,
+uncapped, nobody's-waiting-on-it scheduled job was accepted as the
+simpler tradeoff over introducing new infrastructure just to keep an
+optimization alive.
 
-**What was tried and measured, against the live Socrata API:**
+**What was tried and measured, against the live Socrata API** (kept here
+as a record of real numbers, even though the split-query design built on
+top of them was reversed):
 
 - 311 (`erm2-nwe9`) is a 28M+-row citywide table. A single filtered,
   paginated page (`created_date` + `agency='HPD'`, `$order` by either
@@ -170,95 +181,98 @@ measured 2026-09-04).
 - Consequence: a full 365-day re-fetch of 311 needs ~33 pages even at the
   largest practical page size, at ~300-350s/page → **~3 hours/week**. The
   same full-re-fetch approach for HPD, at `page_size=50000`, needs only ~36
-  pages at ~66.5s/page → **~40 minutes/week** — acceptable for a weekly job.
+  pages at ~66.5s/page → **~40 minutes/week**.
 
-**311's fix — two queries per run instead of one full-window query**
-(`socrata_pipeline.DatasetConfig.split_query`, used only for the 311
-config in `refresh_weekly.py`):
-
-1. **New since last successful run**: `{date_field} >= last_successful_run`
-   (or the full 365-day window on a dataset's first-ever run, when there's
-   no prior history snapshot to diff against), ANDed with `agency='HPD'`.
-2. **Still open, needs a status re-check**: `{date_field} >= (365-day
-   window) AND closed_date IS NULL`, ANDed with `agency='HPD'` — once a 311
-   complaint closes it's effectively immutable, so only currently-open
-   complaints need their status rechecked, which is a small fraction of the
-   1.63M-row window.
-
-Both queries still pay the ~300-350s fixed per-query cost, but it's paid
-twice a week instead of ~33 times, cutting 311's weekly runtime from ~3
-hours to an estimated **~10-15 minutes**. HPD keeps the original
-single-query full re-fetch — at `page_size=50000` its ~40 min/week is
-already fine, and splitting it would add complexity for no benefit.
-
-**Accepted risk, explicitly**: a complaint whose status changes *after* it's
-already been recorded as closed (`closed_date` not null) — including a
-reopen-then-reclose cycle that completes entirely between two of this
-pipeline's weekly runs — is invisible to both queries above and won't be
-picked up until a periodic full resync (running with `split_query=False` /
-a full-window pull) is done manually or scheduled separately. This is a
-deliberate tradeoff traded for the ~3-hour-to-~15-minute runtime win, not an
-oversight — worth keeping in mind if the insight agent's anomaly detection
-ever seems to miss a status flip on an older complaint.
+**History — the split-query design that was built, tested, and then
+reversed:** 311 originally ran two queries per run instead of one
+full-window query — *(1) new since last successful run* and *(2) still-open
+rows needing a status re-check* (closed complaints are effectively
+immutable, so skipping re-fetch of closed-and-unchanged rows is where the
+time savings came from) — cutting 311's weekly runtime from ~3 hours to
+~10-15 minutes. It worked and was verified against the live API. It was
+reversed once the git push-size problem (Storage design below) was
+discovered on the first attempt to actually push the production bootstrap:
+an incremental upsert strategy is only correct if last run's full canonical
+file is available to merge into, and there was no durable place to keep
+that file that didn't add real new infrastructure. Accepting the longer
+runtime was simpler than solving that storage problem just to keep the
+optimization.
 
 **Rejected alternative — `:updated_at` filtering**: before landing on the
-new/still-open split, filtering 311 by Socrata's internal `:updated_at`
-system column (`:updated_at >= last_successful_run`) was tested as a way to
-find only genuinely-changed rows. It was rejected: counts of rows with
-`:updated_at` in the last 1 day (451,960), 7 days (468,474), and 60 days
-(559,861) were all roughly the same size despite the wildly different
-window lengths — the signature of a bulk reindex/republish event touching
-hundreds of thousands of rows at once, not per-row edit tracking. `:updated_at`
-is not a reliable "this row's content actually changed" signal on this
-dataset. Documented here so this dead end isn't re-discovered and re-tested
-later.
+new/still-open split (back when that design was still in use), filtering
+311 by Socrata's internal `:updated_at` system column
+(`:updated_at >= last_successful_run`) was tested as a way to find only
+genuinely-changed rows. It was rejected: counts of rows with `:updated_at`
+in the last 1 day (451,960), 7 days (468,474), and 60 days (559,861) were
+all roughly the same size despite the wildly different window lengths — the
+signature of a bulk reindex/republish event touching hundreds of thousands
+of rows at once, not per-row edit tracking. `:updated_at` is not a reliable
+"this row's content actually changed" signal on this dataset. Documented
+here so this dead end isn't re-discovered and re-tested later.
 
-### Storage design: upsert current only, committed weekly — no history archive
+### Storage design: canonical files are local working state, never committed
 
 Because both datasets are mutable (existing records get status updates, not
 just new records appended), naive append-only storage would create duplicate
 rows for the same entity every time its status changes — silently corrupting
 any count-based analysis. Storage is a single **canonical current file** per
 dataset, one row per entity ID, **upserted** each run (new IDs added,
-existing IDs overwritten if the record's status/date is newer). This is the
-analysis-ready file the insight agent and any dashboarding reads from.
+existing IDs overwritten if the record's content is newer).
 
 - `data/live/hpd_violations_current.csv`
 - `data/live/311_complaints_current.csv`
 
-**No dated history snapshots are written.** An earlier version of this
-design called for an immutable per-run snapshot archive
+**These files are not committed to git**, and are not meant to be read by
+anything outside the run that produced them (not even the insight agent —
+see Insight agent below). This was not the original design — see below —
+but it's load-bearing now: `.gitignore` excludes `data/live/*.csv`, and the
+GitHub Actions workflow treats them as disposable local output of each run,
+never carried forward.
+
+**Why this changed:** the original design committed the canonical CSVs to
+the repo every run, upserted in place, specifically to avoid the unbounded
+growth of a dated history archive (see below). That worked until the first
+real attempt to push the production bootstrap failed: GitHub rejects any
+pushed file over 100MiB, and 311's canonical file alone is ~124MB (HPD's,
+at ~92MB, was already closing in on the limit too, and would have crossed
+it as the rolling window kept collecting rows). Git LFS was considered and
+rejected — LFS stores each version of a tracked file as an independent
+blob with no delta compression against the previous version, so a file
+that gets fully rewritten every run would add a full ~100-125MB to LFS
+storage *every single week*, forever — the same unbounded-growth problem
+the history archive below was already rejected for, just moved one layer
+down, and on a much smaller free quota (1GB storage/bandwidth) than git
+itself has. Persisting the file outside git entirely (a GitHub Release
+asset, external blob storage) was also considered, but every one of those
+options exists only to keep alive an optimization (311's incremental
+split-query fetch, see Pull strategy above) that itself only exists to
+avoid a few hours of runtime on a free, uncapped, nobody's-waiting job.
+Dropping that optimization — full re-fetch every run, for both datasets —
+removed the need for persisted state entirely: nothing has to survive
+between runs for the output to be correct, so there's nothing to solve a
+storage problem for.
+
+**No dated history snapshots are written either.** An earlier version of
+this design called for an immutable per-run snapshot archive
 (`data/live/history/{dataset}_YYYY-MM-DD.csv`) for reproducibility. That was
 dropped after sizing it against the real data volume: at measured row counts
 (~1.6-1.8M rows/dataset in the trailing-year window), each dataset's snapshot
 alone runs ~180-190MB, and since a history archive is by definition never
 pruned, committing it would add that much to the repo *every single run*,
-indefinitely — there's no natural point where that stops being true, so it
-isn't a "grows for a while then levels off" cost, it's genuinely unbounded
-over the pipeline's ongoing operation. Weighed against that, canonical
-current-state files (bounded by the rolling window, overwritten in place
-rather than accumulating) plus `weekly_manifest.json` and the insight agent's
-narrative output are what get committed each run — this keeps the repo
-lightweight and prioritizes an accurate *current* state over long-term
-archival of every past state. If historical analysis beyond "current state"
-is ever needed, that's a distinct, deliberately-scoped feature to design
-then (e.g. an external store with its own retention policy), not something
-to half-build into the weekly commit path now.
+indefinitely. The same unbounded-growth reasoning that killed this design is
+exactly what later killed committing even a single current-state file, and
+then what killed Git LFS as a workaround for that — see above.
 
-One real consequence: dropping history/ removed the only signal the refresh
-script had for "when did this dataset last succeed," which the 311
-split-query strategy depends on. That signal now comes from the
-**previously-committed `weekly_manifest.json`** instead (see Handoff section
-below) — this is also what makes it work correctly on GitHub Actions, where
-each run gets a fresh checkout with no local run history at all; a
-local-only history directory would have appeared to work when run by hand
-but silently broken (falling back to a full re-fetch every run) the moment
-it ran in CI.
+**What actually gets committed each run**, and stays small regardless of
+how large the live datasets grow: `weekly_manifest.json`,
+`baseline_summary.json`, and the insight agent's `latest_insight.md`. None
+of these ever embed raw rows — see Bootstrap baseline and Handoff below.
 
 Per `README.md`, Phase 2's live schema is not subject to Phase 1's 5-column
-restriction — column sets below were chosen for what the insight agent
-needs (anomaly flagging, narrative, potential mapping), not parity with
-Phase 1's static file.
+restriction — column sets below were chosen for what the refresh script
+and insight agent need (anomaly flagging, narrative, potential mapping),
+not parity with Phase 1's static file. These are the *local, uncommitted*
+canonical files' columns — not part of the repo's committed state.
 
 **HPD canonical schema:** `ViolationID, BoroID, Zip, Latitude,
 Longitude, Class, NOVIssueDate, CurrentStatus, CurrentStatusDate`
@@ -266,6 +280,50 @@ Longitude, Class, NOVIssueDate, CurrentStatus, CurrentStatusDate`
 **311 canonical schema:** `unique_key, agency, complaint_type,
 descriptor, borough, incident_zip, latitude, longitude, created_date,
 closed_date, status`
+
+### Bootstrap baseline: `data/live/baseline_summary.json`
+
+`weekly_manifest.json` never embeds raw rows, for any run — not just a
+dataset's first run (see Handoff below). That sidesteps the manifest-size
+problem a raw-row approach would otherwise have: measured directly on this
+project's own data, embedding all rows from a dataset's first-ever full
+window would cost ~1.26GB combined for both datasets (~389 bytes/row in
+JSON, measured from a smaller live test: 3,474,421 bytes for 8,934 rows) —
+comparable in size to the entire dataset. Since the manifest only ever
+carries counts and aggregate stats, this cost never materializes regardless
+of how a given run's numbers look.
+
+What a dataset actually needs captured once, though, is a **fixed
+reference point** to compare every future run against — without one, a
+run's own stats have nothing to be "notable" relative to. On a dataset's
+first-ever successful run, `write_baseline_entry_if_missing` computes and
+commits a small set of **aggregate** stats (not raw rows) to
+`data/live/baseline_summary.json`, once per dataset, as a **permanent,
+never-overwritten** reference point — written once when a dataset first
+has data, then left alone forever, unlike the manifest (regenerated every
+run) and the canonical files (local, uncommitted, regenerated every run
+per Storage design above).
+
+**What's in it, per dataset:** `total_count`; a `by_{field}` breakdown
+(count + percentage, top 15 values) for each of
+`DatasetConfig.baseline_categorical_fields` (HPD: `class`, `currentstatus`;
+311: `status`, `complaint_type`); `top_zips_by_count` (top 15, if
+`baseline_zip_field` is set — HPD: `zip`, 311: `incident_zip`); and, only
+for HPD, `top_zips_by_target_concentration` — top zips by Class C
+percentage, deliberately mirroring Phase 1's own ranking methodology
+(zips under 5 total rows are excluded to avoid noisy 100%-style
+concentrations from a near-empty sample). Verified offline (mocked fetch,
+no live API calls) against synthetic data: bootstrap detection, row
+omission, accurate counts despite omitted rows, correct aggregate math
+including the concentration ranking, and the write-once guarantee (a
+second run for the same dataset leaves the file's contents/mtime
+unchanged) all confirmed.
+
+**Why this file matters beyond solving a size problem:** it's also the
+fixed reference point the insight agent needs to say anything about
+*change over time* — see Insight agent below. Without it, every week's
+narrative could only describe that week's delta in isolation, with no
+"compared to what" to anchor against.
 
 ### Refresh script behavior
 
@@ -292,20 +350,110 @@ closed_date, status`
   instability block otherwise-healthy HPD updates indefinitely. The
   atomicity guarantee that actually matters — never let a canonical file
   end up half-updated — is preserved either way; what changed is only the
-  scope of what must succeed together.
+  scope of what must succeed together. As of 2026-10-05 this independence
+  extends to the GitHub Actions level too — see "Separate jobs per
+  dataset" below.
 - **Trigger:** GitHub Actions scheduled workflow (`on.schedule.cron`, weekly),
   with `workflow_dispatch` also enabled so runs can be triggered manually for
   testing without waiting a week. Repo is public, so Actions minutes are free
   and uncapped. Known platform quirk to budget for: cron schedules are
   silently disabled after 60 days of repository inactivity — worth an
-  occasional manual trigger or commit if the repo goes quiet.
+  occasional manual trigger or commit if the repo goes quiet. A
+  workflow-level `concurrency` group (`weekly-live-data-refresh`,
+  `cancel-in-progress: false`) prevents a manual `workflow_dispatch` from
+  overlapping an in-progress scheduled run against the same Socrata app
+  token — two simultaneous heavy pulls would split the token's rate-limit
+  ceiling and worsen 311's already-known flakiness for both runs. A
+  second run queues rather than cancels the first, so a manual trigger
+  never discards in-progress work.
+- **In-script deadline, not just a platform-level `timeout-minutes`,
+  reviewed and implemented 2026-10-05.** A GitHub Actions job-level or
+  step-level `timeout-minutes` is a hard, ungraceful kill: no manifest
+  gets written, no partial credit for work already done — on the old
+  single-job design, a timeout mid-311-fetch would have silently thrown
+  away HPD's already-successful result too, since the combined manifest
+  was only written once at the very end. `socrata_pipeline.py` now takes
+  an explicit `deadline` (an absolute `time.monotonic()` timestamp,
+  threaded through `run_all_datasets` → `run_dataset_refresh` →
+  `fetch_all_rows` → `_fetch_page`), checked **between pages and before
+  every retry sleep** (not during an in-flight request, which can't be
+  interrupted mid-`urlopen`). On expiry it raises `DeadlineExceededError`
+  — a `DatasetRefreshError` subclass, so it's caught by the same existing
+  failure-handling path and turned into a normal `"failed"` manifest
+  entry, with no special-casing needed. If a dataset's deadline has
+  already passed before its turn even starts (relevant in the legacy
+  combined "both datasets, one deadline" local-run mode — see
+  `refresh_weekly.py`), it gets a `"never started"` failed entry rather
+  than being silently skipped. `timeout-minutes` still exists at the job
+  level as a backstop in case this mechanism itself has a bug, not as the
+  primary safety net.
+- **Per-dataset total retry cap, alongside the existing per-page cap,
+  same review.** `MAX_FETCH_RETRIES=5` only bounds a single page in
+  isolation; nothing previously stopped a dataset under sustained
+  throttling from needing a couple of retries on *every* page, costing up
+  to ~63 minutes per page (see the worst-case math below) without any one
+  page ever tripping its own cap. `MAX_TOTAL_RETRIES_PER_DATASET=50`
+  (`_RetryBudget`, shared across every page of one dataset's
+  `fetch_all_rows` call, checked at the same before-the-retry-sleep
+  checkpoint as the deadline) catches that pattern and raises
+  `RetryBudgetExceededError` — also a `DatasetRefreshError` subclass — well
+  before it could consume the whole deadline. 50 was chosen as comfortably
+  above what isolated, normal transient flakiness should cost across a
+  ~33-36 page pull (a handful of 1-2-retry blips), so crossing it is a
+  signal of systemic trouble, not a false alarm from an ordinary bad page.
+- **Worst-case single-page failure time**, from `MAX_FETCH_RETRIES=5`,
+  `RETRY_BACKOFF_BASE_SECONDS=5.0`, `REQUEST_TIMEOUT_SECONDS=600`: 6 total
+  attempts (1 + 5 retries) before giving up, each able to hang up to 600s,
+  plus 5+10+20+40+80=155s of backoff sleeps between them ≈ **63 minutes
+  for one page to definitively fail** — this is the number both the
+  in-script deadline and the retry budget above exist to interrupt well
+  before it can repeat across many pages. Stacked against real page
+  counts (both datasets full-re-fetch every run — see Pull strategy
+  above): 311 (~33 pages, ~300-350s/page clean) failing on its last page
+  costs ~32 successful pages + one ~63-min failing page ≈ **~4.1-4.5
+  hours** worst case; HPD (~36 pages, ~66.5s/page clean) adds a smaller
+  amount if it degrades too. A genuinely pathological case (every page on
+  a dataset maxing out every retry) can still mathematically exceed
+  GitHub's 360-minute hard cap for hosted runners — the in-script deadline
+  doesn't prevent that, it just guarantees a clean, labeled failure well
+  before GitHub's generic hard-kill would otherwise be what stops it.
+- **Separate jobs per dataset (`refresh-hpd`, `refresh-311`), reviewed and
+  implemented 2026-10-05.** Before this, both datasets ran sequentially
+  inside one job/one script invocation, and (per the in-script-deadline
+  bullet above) a job-level timeout killing that one job could lose a
+  dataset's already-completed result along with the one still running.
+  Splitting into separate GitHub Actions jobs means each dataset gets its
+  own `timeout-minutes` backstop and its own runner, so one dataset's
+  platform-level kill genuinely cannot affect the other's result. Each
+  job runs `refresh_weekly.py --dataset {hpd,311} --deadline-minutes N
+  --output data/live/partial_manifest_{name}.json` (120min for HPD,
+  270min for 311 — sized to each dataset's own expected workload, not a
+  single number covering both) and uploads its partial manifest plus its
+  local `baseline_summary.json` as an artifact (`if: always()`, so a
+  partial result still gets uploaded even after an in-script-deadline
+  failure — though if the *job-level* timeout is what actually fires
+  instead, meaning the in-script deadline somehow didn't, there's only a
+  brief cancellation grace period for the upload to complete, with no
+  guarantee). A third job, `finalize` (`needs: [refresh-hpd, refresh-311]`,
+  `if: always()` so it still runs if one or both upstream jobs failed or
+  were killed), downloads both artifacts (`continue-on-error: true` on
+  each download, since a missing artifact — its job never got that far —
+  must not fail finalize), and runs `scripts/merge_manifest.py` to combine
+  them into the final `weekly_manifest.json`: a dataset named in
+  `--expected` with no matching partial gets a synthesized `"failed"`
+  entry (`"No partial manifest found for this dataset this run"`), with
+  `last_successful_run` chained forward from the previously-committed
+  manifest so staleness tracking doesn't silently break. `finalize` then
+  runs the insight agent (if ≥1 dataset succeeded) and opens the PR, same
+  as before.
 
 ### Handoff to the insight agent: `weekly_manifest.json`
 
 The refresh script's last step writes a manifest that the insight agent
 reads instead of the full canonical files. Per the per-dataset failure model
 above, the manifest reports status independently for each dataset rather
-than being all-or-nothing:
+than being all-or-nothing. Current shape (never embeds raw rows, for any
+run — see Bootstrap baseline above):
 
 ```json
 {
@@ -313,11 +461,15 @@ than being all-or-nothing:
   "datasets": {
     "hpd": {
       "status": "success",
-      "new_count": 142,
-      "updated_count": 38,
       "total_current": 1048713,
-      "new_violations": [ { ...full row... } ],
-      "updated_violations": [ { ...full row... } ]
+      "signals": {
+        "basis": "this run's full aggregate stats compared against baseline_summary.json",
+        "category_shifts": [
+          {"field": "class", "value": "C", "this_run_pct": 38.2, "baseline_pct": 31.43, "delta_pts": 6.77}
+        ],
+        "new_zip_entrants": [ {"zip": "10006", "count": 94} ],
+        "total_count": {"this_run": 1048713, "baseline": 886413}
+      }
     },
     "311": {
       "status": "failed",
@@ -328,37 +480,46 @@ than being all-or-nothing:
 }
 ```
 
-A dataset with `status: "failed"` contributes no rows to the manifest and
-its canonical file is untouched this run (see Failure handling above) —
+A dataset with `status: "failed"` contributes nothing else to the manifest
+and its canonical file is untouched this run (see Failure handling above) —
 `last_successful_run` lets the insight agent (and anyone reading the
 manifest) know how stale that dataset currently is.
 
-**`last_successful_run` is read from the previously-committed manifest, not
-from local files.** Since `data/live/history/` was dropped (see Storage
-design above), there's no local per-run snapshot to scan for "when did this
-last succeed." Instead, before writing this run's manifest, the script reads
-whatever manifest is already sitting at `data/live/weekly_manifest.json`
-from the *previous* run: if a dataset's entry there shows `status:
-"success"`, that manifest's own `run_date` becomes this dataset's
-`last_successful_run`; if it shows `"failed"`, its own `last_successful_run`
-is carried forward unchanged (correctly chaining through any number of
-consecutive failures back to the last real success, or to `null` if it has
-never once succeeded). This is why the manifest has to be part of what's
-committed each run — a value that only ever lived in an uncommitted local
-file would vanish on GitHub Actions' next fresh checkout, silently forcing
-every run back to a full-window re-fetch. Verified with a live two-run test:
-run 1 (no prior manifest) fetched the full window; run 2, reading run 1's
-manifest, correctly narrowed its "new since" cutoff to run 1's date instead
-of falling back to the full window again.
+**A `success` entry only has a `signals` key if the dataset already had a
+baseline entry *before* this run.** A dataset's first-ever successful run
+(or, equivalently, any run where `write_baseline_entry_if_missing` is about
+to write that dataset's baseline for the first time) has nothing to compare
+against yet — `total_current` is still accurate, but `signals` is simply
+absent. `socrata_pipeline.run_all_datasets` reads `baseline_summary.json`
+once, before any dataset in the run is processed, specifically so a
+dataset getting its baseline written *this* run isn't diffed against the
+baseline that was just captured from this same run's own data.
 
-**Design rationale:** the script already computes the new/updated ID sets
-in memory while performing the upsert, and already has the full row data at
-that point — so embedding full rows (not just IDs) costs the script
-approximately nothing extra, but saves the insight agent a redundant lookup
-against a large canonical file every single run. Since the agent step is the
-more expensive, slower, and more error-prone part of the pipeline per
-Phase 1's own findings, work is deliberately pushed onto the cheap
-deterministic script rather than the costly agent step.
+**`last_successful_run` is read from the previously-committed manifest, not
+from local files.** There's no local per-run history to scan (see Storage
+design above — no history/ directory, and the canonical CSVs themselves
+aren't committed either). Instead, before writing this run's manifest, the
+script reads whatever manifest is already sitting at
+`data/live/weekly_manifest.json` from the *previous* run: if a dataset's
+entry there shows `status: "success"`, that manifest's own `run_date`
+becomes this dataset's `last_successful_run`; if it shows `"failed"`, its
+own `last_successful_run` is carried forward unchanged (correctly chaining
+through any number of consecutive failures back to the last real success,
+or to `null` if it has never once succeeded). This is purely informational
+now (nothing queries differently based on it — both datasets always fetch
+the full window) but still valuable for the insight agent's staleness
+narrative on a failed dataset. This is why the manifest has to be part of
+what's committed each run — a value that only ever lived in an uncommitted
+local file would vanish on GitHub Actions' next fresh checkout.
+
+**Design rationale:** anomaly arithmetic belongs in the cheap deterministic
+script, not the agent — `scripts/insight_signals.diff_against_baseline`
+computes it from two small, already-aggregate stat dicts (this run's,
+freshly computed; the baseline's, read from disk), never from raw rows.
+Since the agent step is the more expensive, slower, and more error-prone
+part of the pipeline per Phase 1's own findings, pushing that work onto the
+script keeps the agent's job limited to judgment (which flagged shifts are
+worth a sentence) and writing the narrative.
 
 **Insight agent trigger condition:** the agent should run whenever
 `weekly_manifest.json` exists for this run **and** at least one dataset
@@ -378,12 +539,47 @@ entirely in that case (nothing to analyze).
 - Runs whenever a manifest exists with at least one successful dataset (see
   Handoff section above for the exact trigger condition and partial-failure
   handling).
-- Reads `weekly_manifest.json` only, not the full canonical files — keeps
-  the agent's input small and bounded regardless of how large the canonical
-  files grow over time.
+- **Reads two files, both small and bounded — not the full canonical
+  files:**
+  1. `weekly_manifest.json` — that week's delta (new/updated rows, or a
+     bootstrap-run's aggregate-free summary counts — see Bootstrap baseline
+     above).
+  2. `data/live/baseline_summary.json` — the permanent, never-overwritten
+     reference point each dataset was captured at on its first successful
+     run.
+
+  Reading only the manifest was the original design; it was extended to
+  also read the baseline once the bootstrap-manifest-size problem above
+  surfaced a gap in it — a delta *by itself* has no "compared to what."
+  `weekly_manifest.json` alone lets the agent describe what changed this
+  week, but not whether that change is notable — e.g. answering "is this
+  week's Class C share higher than where this zip started" requires the
+  baseline's `by_class`/concentration figures as the comparison point, not
+  just this week's delta. Both stay small and bounded regardless of how
+  large the canonical files grow: the manifest by construction (weekly
+  deltas are small once past the bootstrap run), the baseline by
+  construction (fixed aggregate stats, written once, never grows).
 - Responsibilities per original Phase 2 scoping: flag anomalies, generate
-  short narrative insights. Specific anomaly-detection logic and narrative
-  format to be defined at implementation time — not yet specified here.
+  short narrative insights — now informed by both the current delta and the
+  baseline it's changing relative to.
+
+**Implemented.** The agent definition is `.claude/agents/insight-agent.md`.
+Per Phase 1's own finding that agent reasoning is the expensive,
+error-prone part of the pipeline, the anomaly *arithmetic* (category-mix
+deltas vs. baseline, new-zip-entrant detection) is computed
+deterministically: `socrata_pipeline.run_all_datasets` computes this run's
+full aggregate stats (`compute_baseline_stats`, the same function that
+builds `baseline_summary.json`) and hands both that and the dataset's
+existing baseline entry to `insight_signals.diff_against_baseline`, which
+attaches the result as a `signals` key on the manifest entry — before the
+manifest is ever written, let alone read by the agent. The agent still
+reads exactly the two files described in Handoff above; it isn't the one
+doing the percentage math. The agent's job is judgment (which flagged
+shifts are actually worth a sentence) and writing
+`data/live/latest_insight.md` (overwritten each run, no dated archive —
+same rationale as the rest of this design). Thresholds live at the top of
+`insight_signals.py` (`CATEGORY_DELTA_THRESHOLD_PTS`, `TOP_N_NEW_ZIP_ENTRANTS`)
+if they need tuning once real weekly runs accumulate.
 
 ## Where to start
 
@@ -391,7 +587,58 @@ entirely in that case (nothing to analyze).
 2. For Phase 2, the refresh script (`scripts/socrata_pipeline.py`,
    `scripts/refresh_weekly.py`) is implemented and validated against the live
    API — see the "Pull strategy" and "Storage design" subsections above for
-   what changed from the original design during implementation. Not yet done:
-   the GitHub Actions workflow, the first production backfill into
-   `data/live/`, and the insight agent.
+   what changed from the original design during implementation (both
+   datasets now fully re-fetch every run; neither dataset's canonical CSV
+   is committed to git — see those two subsections for why). The insight
+   agent is now built (see the "Insight agent" subsection above) —
+   `.claude/agents/insight-agent.md` plus the deterministic
+   `scripts/insight_signals.py` signal-computation step, verified offline
+   (mocked fetch, no live API calls) across two simulated runs: a no-prior-
+   baseline run correctly produced no `signals` key and wrote the baseline,
+   and a second run correctly computed `signals` against that fixed
+   baseline without mutating it.
+   The GitHub Actions workflow (`.github/workflows/weekly-refresh.yml`) is
+   now built: Sunday 06:00 UTC cron + `workflow_dispatch`, a workflow-level
+   `concurrency` group so a manual trigger queues behind rather than
+   cancels an in-progress scheduled run, three jobs (`refresh-hpd`,
+   `refresh-311` — each independently timeout-bounded and running
+   `refresh_weekly.py --dataset ... --deadline-minutes ...`, see "Refresh
+   script behavior" above for why they're split — then `finalize`, which
+   merges their outputs via `scripts/merge_manifest.py`, runs the insight
+   agent headlessly (Claude Code CLI, `CLAUDE_CODE_OAUTH_TOKEN` secret)
+   only when at least one dataset succeeded, then opens a PR with whatever
+   changed via `peter-evans/create-pull-request` (deliberately a PR, not a
+   direct push to main, so a human reviews each week's diff — including
+   the insight agent's narrative — before it lands; the PR never includes
+   the canonical CSVs, only `weekly_manifest.json`, `baseline_summary.json`,
+   and `latest_insight.md`). Requires two repo secrets:
+   `NYC_OPEN_DATA_APP_TOKEN` (already set) and `CLAUDE_CODE_OAUTH_TOKEN`
+   (not yet added — run `claude setup-token` locally, which rides on the
+   user's existing Pro subscription instead of separate API-credit billing,
+   and add the resulting token under Settings → Secrets and variables →
+   Actions). Also requires "Allow GitHub Actions to create and approve pull
+   requests" enabled under Settings → Actions → General → Workflow
+   permissions, or the PR-creation step will fail even though the refresh
+   itself succeeded. **Not yet verified end-to-end** — the insight-agent
+   step's headless invocation (`claude -p ... --permission-mode
+   acceptEdits`) hasn't been run in this environment, and neither has the
+   three-job split itself (artifact upload/download between
+   `refresh-hpd`/`refresh-311` and `finalize`, and `merge_manifest.py`
+   operating on real GitHub Actions artifacts rather than local test
+   fixtures). The deadline/retry-budget logic and `merge_manifest.py`'s
+   merge behavior are verified offline (mocked fetch, fake clock,
+   synthetic missing-partial scenario — see test files from the 2026-10-05
+   session, not checked into the repo). Trigger one `workflow_dispatch`
+   run, confirm each job's actual wall-clock time against the ~40min/
+   ~165-190min expected-normal estimates above, and check the resulting PR
+   (manifest + narrative) before trusting the cron.
+
+   **Unresolved as of 2026-10-05**: local `main` has two older commits
+   (`eed2cc1`, `0c8d286`) that were never pushed to `origin/main` — they
+   contain the first production bootstrap under the old split-query design,
+   including the ~124MB 311 canonical CSV that's over GitHub's push limit
+   and is exactly the problem this redesign fixes. They need to be dealt
+   with (not pushed as-is) before this branch is brought in sync with
+   `origin/main` — see whether a `results.md`/`lessons-learned.md` entry
+   about this discovery is warranted once resolved.
 3. Log metrics and findings in markdown files at the repo root (e.g., `results.md`, `failure-analysis.md`, `governance-audit.md`).

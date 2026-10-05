@@ -1,0 +1,413 @@
+{
+  "hpd": {
+    "generated_at": "2026-09-11",
+    "total_count": 886413,
+    "by_class": [
+      {
+        "value": "B",
+        "count": 387161,
+        "pct": 43.68
+      },
+      {
+        "value": "C",
+        "count": 278599,
+        "pct": 31.43
+      },
+      {
+        "value": "A",
+        "count": 220653,
+        "pct": 24.89
+      }
+    ],
+    "by_currentstatus": [
+      {
+        "value": "NOV SENT OUT",
+        "count": 324674,
+        "pct": 36.63
+      },
+      {
+        "value": "VIOLATION DISMISSED",
+        "count": 209016,
+        "pct": 23.58
+      },
+      {
+        "value": "VIOLATION CLOSED",
+        "count": 191443,
+        "pct": 21.6
+      },
+      {
+        "value": "NOTICE OF ISSUANCE SENT TO TENANT",
+        "count": 31298,
+        "pct": 3.53
+      },
+      {
+        "value": "FIRST NO ACCESS TO RE- INSPECT VIOLATION",
+        "count": 30918,
+        "pct": 3.49
+      },
+      {
+        "value": "NOT COMPLIED WITH",
+        "count": 30618,
+        "pct": 3.45
+      },
+      {
+        "value": "CIV14 MAILED",
+        "count": 18541,
+        "pct": 2.09
+      },
+      {
+        "value": "VIOLATION WILL BE REINSPECTED",
+        "count": 12267,
+        "pct": 1.38
+      },
+      {
+        "value": "NOV CERTIFIED ON TIME",
+        "count": 9348,
+        "pct": 1.05
+      },
+      {
+        "value": "INVALID CERTIFICATION",
+        "count": 8463,
+        "pct": 0.95
+      },
+      {
+        "value": "DEFECT LETTER ISSUED",
+        "count": 6998,
+        "pct": 0.79
+      },
+      {
+        "value": "NOV CERTIFIED LATE",
+        "count": 6542,
+        "pct": 0.74
+      },
+      {
+        "value": "FALSE CERTIFICATION",
+        "count": 3672,
+        "pct": 0.41
+      },
+      {
+        "value": "CERTIFICATION POSTPONMENT GRANTED",
+        "count": 1172,
+        "pct": 0.13
+      },
+      {
+        "value": "CERTIFICATION POSTPONMENT DENIED",
+        "count": 944,
+        "pct": 0.11
+      }
+    ],
+    "top_zips_by_count": [
+      {
+        "zip": "11226",
+        "count": 35668
+      },
+      {
+        "zip": "10458",
+        "count": 30359
+      },
+      {
+        "zip": "10457",
+        "count": 28659
+      },
+      {
+        "zip": "10453",
+        "count": 26968
+      },
+      {
+        "zip": "10456",
+        "count": 24621
+      },
+      {
+        "zip": "10452",
+        "count": 24117
+      },
+      {
+        "zip": "10468",
+        "count": 23596
+      },
+      {
+        "zip": "10467",
+        "count": 23502
+      },
+      {
+        "zip": "10460",
+        "count": 16969
+      },
+      {
+        "zip": "11213",
+        "count": 16179
+      },
+      {
+        "zip": "11212",
+        "count": 16171
+      },
+      {
+        "zip": "10031",
+        "count": 15679
+      },
+      {
+        "zip": "11225",
+        "count": 15576
+      },
+      {
+        "zip": "10459",
+        "count": 15443
+      },
+      {
+        "zip": "11233",
+        "count": 15434
+      }
+    ],
+    "top_zips_by_target_concentration": {
+      "field": "class",
+      "value": "C",
+      "zips": [
+        {
+          "zip": "10006",
+          "target_count": 56,
+          "total_count": 94,
+          "target_pct": 59.57
+        },
+        {
+          "zip": "10038",
+          "target_count": 163,
+          "total_count": 352,
+          "target_pct": 46.31
+        },
+        {
+          "zip": "10475",
+          "target_count": 396,
+          "total_count": 869,
+          "target_pct": 45.57
+        },
+        {
+          "zip": "10280",
+          "target_count": 23,
+          "total_count": 51,
+          "target_pct": 45.1
+        },
+        {
+          "zip": "10069",
+          "target_count": 10,
+          "total_count": 26,
+          "target_pct": 38.46
+        },
+        {
+          "zip": "10039",
+          "target_count": 2749,
+          "total_count": 7356,
+          "target_pct": 37.37
+        },
+        {
+          "zip": "10010",
+          "target_count": 332,
+          "total_count": 905,
+          "target_pct": 36.69
+        },
+        {
+          "zip": "10030",
+          "target_count": 2975,
+          "total_count": 8180,
+          "target_pct": 36.37
+        },
+        {
+          "zip": "10452",
+          "target_count": 8751,
+          "total_count": 24117,
+          "target_pct": 36.29
+        },
+        {
+          "zip": "11372",
+          "target_count": 2929,
+          "total_count": 8123,
+          "target_pct": 36.06
+        },
+        {
+          "zip": "11355",
+          "target_count": 1821,
+          "total_count": 5059,
+          "target_pct": 36.0
+        },
+        {
+          "zip": "10009",
+          "target_count": 1430,
+          "total_count": 4011,
+          "target_pct": 35.65
+        },
+        {
+          "zip": "10453",
+          "target_count": 9592,
+          "total_count": 26968,
+          "target_pct": 35.57
+        },
+        {
+          "zip": "11427",
+          "target_count": 192,
+          "total_count": 542,
+          "target_pct": 35.42
+        },
+        {
+          "zip": "11109",
+          "target_count": 6,
+          "total_count": 17,
+          "target_pct": 35.29
+        }
+      ]
+    }
+  },
+  "311": {
+    "generated_at": "2026-09-16",
+    "total_count": 893516,
+    "by_status": [
+      {
+        "value": "Closed",
+        "count": 843843,
+        "pct": 94.44
+      },
+      {
+        "value": "Open",
+        "count": 49672,
+        "pct": 5.56
+      },
+      {
+        "value": "In Progress",
+        "count": 1,
+        "pct": 0.0
+      }
+    ],
+    "by_complaint_type": [
+      {
+        "value": "HEAT/HOT WATER",
+        "count": 357802,
+        "pct": 40.04
+      },
+      {
+        "value": "UNSANITARY CONDITION",
+        "count": 134699,
+        "pct": 15.08
+      },
+      {
+        "value": "PLUMBING",
+        "count": 83270,
+        "pct": 9.32
+      },
+      {
+        "value": "PAINT/PLASTER",
+        "count": 67178,
+        "pct": 7.52
+      },
+      {
+        "value": "DOOR/WINDOW",
+        "count": 52517,
+        "pct": 5.88
+      },
+      {
+        "value": "WATER LEAK",
+        "count": 46893,
+        "pct": 5.25
+      },
+      {
+        "value": "GENERAL",
+        "count": 42351,
+        "pct": 4.74
+      },
+      {
+        "value": "ELECTRIC",
+        "count": 35033,
+        "pct": 3.92
+      },
+      {
+        "value": "FLOORING/STAIRS",
+        "count": 30518,
+        "pct": 3.42
+      },
+      {
+        "value": "APPLIANCE",
+        "count": 25545,
+        "pct": 2.86
+      },
+      {
+        "value": "SAFETY",
+        "count": 14490,
+        "pct": 1.62
+      },
+      {
+        "value": "ELEVATOR",
+        "count": 2091,
+        "pct": 0.23
+      },
+      {
+        "value": "OUTSIDE BUILDING",
+        "count": 1128,
+        "pct": 0.13
+      },
+      {
+        "value": "Safety",
+        "count": 1,
+        "pct": 0.0
+      }
+    ],
+    "top_zips_by_count": [
+      {
+        "zip": "11226",
+        "count": 29744
+      },
+      {
+        "zip": "10458",
+        "count": 26520
+      },
+      {
+        "zip": "10452",
+        "count": 26386
+      },
+      {
+        "zip": "10467",
+        "count": 23746
+      },
+      {
+        "zip": "10468",
+        "count": 23660
+      },
+      {
+        "zip": "10453",
+        "count": 23646
+      },
+      {
+        "zip": "10457",
+        "count": 23161
+      },
+      {
+        "zip": "10456",
+        "count": 20598
+      },
+      {
+        "zip": "10031",
+        "count": 17204
+      },
+      {
+        "zip": "10032",
+        "count": 16068
+      },
+      {
+        "zip": "11225",
+        "count": 14562
+      },
+      {
+        "zip": "11212",
+        "count": 14516
+      },
+      {
+        "zip": "11213",
+        "count": 14498
+      },
+      {
+        "zip": "10460",
+        "count": 14492
+      },
+      {
+        "zip": "10459",
+        "count": 14373
+      }
+    ]
+  }
+}

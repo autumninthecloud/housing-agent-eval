@@ -1,0 +1,256 @@
+name: Weekly live data refresh
+
+# Runs the deterministic Phase 2 refresh (scripts/refresh_weekly.py) for HPD
+# and 311 as two independent jobs, merges their results
+# (scripts/merge_manifest.py), runs the insight agent
+# (.claude/agents/insight-agent.md) if at least one dataset succeeded, then
+# opens a PR with whatever changed. See CLAUDE.md's "Phase 2 design (locked,
+# pre-implementation)" for the manifest/exit-code contract this depends on.
+
+# Prevents a manual workflow_dispatch from overlapping an in-progress
+# scheduled run against the same Socrata app token — two simultaneous heavy
+# pulls would split the token's rate-limit ceiling and make 311's known
+# flakiness worse for both runs. A second run queues instead of cancelling
+# the first (cancel-in-progress: false), so a manual trigger never throws
+# away an in-progress run's work.
+concurrency:
+  group: weekly-live-data-refresh
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: "0 6 * * 0" # Sunday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # HPD and 311 are separate jobs specifically so one dataset's job-level
+  # timeout can never take the other dataset's already-completed result
+  # down with it. Before this split, both ran sequentially inside one job,
+  # and the combined manifest was only written once at the very end — if
+  # that job hit its timeout mid-311-fetch, HPD's successful result (even
+  # if it had finished minutes earlier) was lost too, since nothing had
+  # been written yet. Each job here writes its own partial result as soon
+  # as it's done; the finalize job below combines whatever actually
+  # arrives, including just one side if the other's job dies outright.
+  refresh-hpd:
+    runs-on: ubuntu-latest
+    # Backstop behind the in-script --deadline-minutes below (120), not
+    # the primary mechanism: the script is expected to always finish and
+    # write output well inside this window on its own. This exists only
+    # to catch the case where the in-script deadline check itself somehow
+    # fails to fire (e.g. a bug, or a hang the Python process can't
+    # interrupt itself from) — 30 minutes above the in-script deadline is
+    # enough slack that this should never actually trigger in practice.
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The --deadline-minutes flag is the real protection here: checked
+      # between pages and before every retry sleep inside the script
+      # itself (socrata_pipeline.py), so on expiry it writes a clean
+      # "failed" partial manifest and exits normally — no completed work
+      # lost, no generic platform cancellation. 120min covers HPD's
+      # ~40min expected-normal runtime with real retry headroom; see
+      # CLAUDE.md's "Refresh script behavior" for the worst-case math.
+      - name: Run HPD refresh
+        id: refresh
+        env:
+          NYC_OPEN_DATA_APP_TOKEN: ${{ secrets.NYC_OPEN_DATA_APP_TOKEN }}
+        run: |
+          set +e
+          python scripts/refresh_weekly.py --dataset hpd --deadline-minutes 120 \
+            --output data/live/partial_manifest_hpd.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Fail job if HPD refresh could not start
+        if: steps.refresh.outputs.exit_code == '2'
+        run: |
+          echo "refresh_weekly.py exited 2 (could not start — check NYC_OPEN_DATA_APP_TOKEN)." >&2
+          exit 1
+
+      # if: always() so this still runs after a failed/deadline-exceeded
+      # refresh (there's still a partial manifest worth keeping) — but
+      # this is a best-effort fallback, not the primary mechanism: if the
+      # job-level timeout-minutes above is what actually kills this job
+      # (meaning the in-script deadline failed to fire first), there's
+      # only a brief cancellation grace period for this step to run at
+      # all, and no guarantee it completes.
+      - name: Upload HPD result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hpd-result
+          path: |
+            data/live/partial_manifest_hpd.json
+            data/live/baseline_summary.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  refresh-311:
+    runs-on: ubuntu-latest
+    # Same backstop role as HPD's job timeout above, sized to 311's own
+    # in-script deadline (270) plus the same 30-minute slack.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 270min covers 311's ~165-190min expected-normal runtime (33 pages
+      # at ~300-350s/page, full re-fetch every run — see CLAUDE.md's Pull
+      # strategy) with headroom for the retries its known flakiness
+      # causes, while still failing — cleanly, via the in-script deadline,
+      # not this job's 300min hard backstop — well before that backstop.
+      - name: Run 311 refresh
+        id: refresh
+        env:
+          NYC_OPEN_DATA_APP_TOKEN: ${{ secrets.NYC_OPEN_DATA_APP_TOKEN }}
+        run: |
+          set +e
+          python scripts/refresh_weekly.py --dataset 311 --deadline-minutes 270 \
+            --output data/live/partial_manifest_311.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Fail job if 311 refresh could not start
+        if: steps.refresh.outputs.exit_code == '2'
+        run: |
+          echo "refresh_weekly.py exited 2 (could not start — check NYC_OPEN_DATA_APP_TOKEN)." >&2
+          exit 1
+
+      - name: Upload 311 result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 311-result
+          path: |
+            data/live/partial_manifest_311.json
+            data/live/baseline_summary.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  finalize:
+    needs: [refresh-hpd, refresh-311]
+    # Must run even if one or both refresh jobs failed or were cancelled
+    # by their own timeout — that's exactly the case merge_manifest.py
+    # exists to handle (synthesizing a "failed" entry for whichever
+    # dataset never reported in, instead of silently omitting it).
+    if: always()
+    runs-on: ubuntu-latest
+    # Covers checkout + two artifact downloads + the merge script (all
+    # fast) + the insight-agent step (capped at 20min internally, below)
+    # + the PR step, with a few minutes of margin beyond that sum.
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # continue-on-error: true on both downloads — a missing artifact
+      # (its job never got to the upload step) must not fail this job;
+      # merge_manifest.py treats an absent partial file as "this dataset's
+      # job didn't report in" and synthesizes a failed entry for it.
+      - name: Download HPD result
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: hpd-result
+          path: hpd-result
+
+      - name: Download 311 result
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: 311-result
+          path: 311-result
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Merge manifest and baseline
+        id: merge
+        run: |
+          set +e
+          python scripts/merge_manifest.py \
+            --expected hpd 311 \
+            --partial hpd-result/data/live/partial_manifest_hpd.json \
+            --partial 311-result/data/live/partial_manifest_311.json \
+            --baseline hpd-result/data/live/baseline_summary.json \
+            --baseline 311-result/data/live/baseline_summary.json \
+            --previous-manifest data/live/weekly_manifest.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Set up Node.js (for Claude Code CLI)
+        if: steps.merge.outputs.exit_code == '0'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        if: steps.merge.outputs.exit_code == '0'
+        run: npm install -g @anthropic-ai/claude-code
+
+      # Single agent, no delegation — matches insight-agent.md's own "do not
+      # spawn or delegate" constraint. Told to follow the agent file's
+      # instructions directly rather than invoked via a named-subagent CLI
+      # flag, since that avoids depending on exact Task-tool-from-headless-
+      # mode behavior. --permission-mode acceptEdits lets it write
+      # data/live/latest_insight.md without an interactive approval prompt
+      # (there's no human in this loop to approve one). timeout-minutes is
+      # independent of --max-turns: --max-turns bounds agent loop
+      # iterations, not wall-clock time, so a single hung turn (API outage,
+      # stuck tool call) still needs its own clock.
+      #
+      # NOT YET VERIFIED end-to-end in this environment — run this workflow
+      # once via workflow_dispatch and check the step's log + the resulting
+      # PR diff before trusting the Sunday cron.
+      - name: Run insight agent
+        if: steps.merge.outputs.exit_code == '0'
+        timeout-minutes: 20
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          claude -p "Read .claude/agents/insight-agent.md and carry out exactly the instructions in it now. Do not use the Task tool or delegate to any other agent — follow the instructions directly yourself, reading only data/live/weekly_manifest.json and data/live/baseline_summary.json, and writing data/live/latest_insight.md." \
+            --permission-mode acceptEdits \
+            --max-turns 15
+
+      - name: Open PR with this run's changes
+        if: steps.merge.outputs.exit_code == '0' || steps.merge.outputs.exit_code == '1'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Weekly live data refresh"
+          title: "Weekly live data refresh"
+          body: |
+            Automated run of `scripts/refresh_weekly.py` (HPD and 311 as
+            separate jobs, merged by `scripts/merge_manifest.py`)
+            ${{ steps.merge.outputs.exit_code == '0' && 'plus the insight agent' || '(every dataset failed this run — see weekly_manifest.json for errors; insight agent was skipped)' }}.
+
+            Check `data/live/weekly_manifest.json` for per-dataset status and
+            `data/live/latest_insight.md` for this run's narrative, if generated.
+          branch: weekly-refresh
+          branch-suffix: timestamp
+          delete-branch: true
+          # Deliberately excludes data/live/*.csv — the canonical files are
+          # local working state for this run only, never committed (they'd
+          # exceed GitHub's 100MiB per-file push limit). See CLAUDE.md's
+          # Phase 2 "Storage design" section.
+          add-paths: |
+            data/live/*.json
+            data/live/*.md
