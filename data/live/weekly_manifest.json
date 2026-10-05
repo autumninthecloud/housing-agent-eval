@@ -1,0 +1,36 @@
+{
+  "run_date": "2026-10-05",
+  "datasets": {
+    "hpd": {
+      "status": "success",
+      "total_current": 892922,
+      "signals": {
+        "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
+        "category_shifts": [],
+        "new_zip_entrants": [],
+        "total_count": {
+          "this_run": 892922,
+          "baseline": 886413
+        }
+      }
+    },
+    "311": {
+      "status": "success",
+      "total_current": 903945,
+      "signals": {
+        "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
+        "category_shifts": [],
+        "new_zip_entrants": [
+          {
+            "zip": "10462",
+            "count": 14495
+          }
+        ],
+        "total_count": {
+          "this_run": 903945,
+          "baseline": 893516
+        }
+      }
+    }
+  }
+}
