@@ -202,6 +202,18 @@ jobs:
           name: 311-result
           path: 311-result
 
+      # upload-artifact@v4 strips each upload's least-common-ancestor path
+      # before storing it — the HPD/311 upload steps list two files that
+      # share data/live/ as their common parent, so the artifact stores
+      # them flattened (partial_manifest_hpd.json, baseline_summary.json),
+      # not nested under data/live/. Logged explicitly so a future path
+      # mismatch (on either side) shows up immediately in the log instead
+      # of as another silent "No partial manifest found" guess.
+      - name: Log downloaded artifact contents
+        run: |
+          echo "--- hpd-result/ ---"; find hpd-result -type f 2>/dev/null || echo "(missing)"
+          echo "--- 311-result/ ---"; find 311-result -type f 2>/dev/null || echo "(missing)"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -213,10 +225,10 @@ jobs:
           set +e
           python scripts/merge_manifest.py \
             --expected hpd 311 \
-            --partial hpd-result/data/live/partial_manifest_hpd.json \
-            --partial 311-result/data/live/partial_manifest_311.json \
-            --baseline hpd-result/data/live/baseline_summary.json \
-            --baseline 311-result/data/live/baseline_summary.json \
+            --partial hpd-result/partial_manifest_hpd.json \
+            --partial 311-result/partial_manifest_311.json \
+            --baseline hpd-result/baseline_summary.json \
+            --baseline 311-result/baseline_summary.json \
             --previous-manifest data/live/weekly_manifest.json
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
