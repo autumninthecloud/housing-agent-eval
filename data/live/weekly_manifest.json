@@ -1,39 +1,39 @@
 {
-  "run_date": "2026-10-11",
+  "run_date": "2026-10-18",
   "datasets": {
     "hpd": {
       "status": "success",
-      "total_current": 892080,
+      "total_current": 892462,
       "window_days": 365,
-      "window_start": "2025-10-11",
-      "window_end": "2026-10-11",
+      "window_start": "2025-10-18",
+      "window_end": "2026-10-18",
       "signals": {
         "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
         "category_shifts": [],
         "new_zip_entrants": [],
         "total_count": {
-          "this_run": 892080,
+          "this_run": 892462,
           "baseline": 886413
         }
       }
     },
     "311": {
       "status": "success",
-      "total_current": 907561,
+      "total_current": 902370,
       "window_days": 365,
-      "window_start": "2025-10-11",
-      "window_end": "2026-10-11",
+      "window_start": "2025-10-18",
+      "window_end": "2026-10-18",
       "signals": {
         "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
         "category_shifts": [],
         "new_zip_entrants": [
           {
             "zip": "10462",
-            "count": 14558
+            "count": 14552
           }
         ],
         "total_count": {
-          "this_run": 907561,
+          "this_run": 902370,
           "baseline": 893516
         }
       }
