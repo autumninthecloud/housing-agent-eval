@@ -1,39 +1,29 @@
 {
-  "run_date": "2026-10-25",
+  "run_date": "2026-11-08",
   "datasets": {
     "hpd": {
-      "status": "success",
-      "total_current": 895575,
-      "window_days": 365,
-      "window_start": "2025-10-25",
-      "window_end": "2026-10-25",
-      "signals": {
-        "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
-        "category_shifts": [],
-        "new_zip_entrants": [],
-        "total_count": {
-          "this_run": 895575,
-          "baseline": 886413
-        }
-      }
+      "status": "failed",
+      "error": "Timed out reaching Socrata for dataset 'hpd' (offset=150000) after 600s",
+      "last_successful_run": "2026-10-25",
+      "window_days": 365
     },
     "311": {
       "status": "success",
-      "total_current": 911308,
+      "total_current": 904842,
       "window_days": 365,
-      "window_start": "2025-10-25",
-      "window_end": "2026-10-25",
+      "window_start": "2025-11-08",
+      "window_end": "2026-11-08",
       "signals": {
         "basis": "this run's full aggregate stats (recomputed fresh every run) compared against the dataset's permanent baseline_summary.json entry",
         "category_shifts": [],
         "new_zip_entrants": [
           {
             "zip": "10462",
-            "count": 14684
+            "count": 14469
           }
         ],
         "total_count": {
-          "this_run": 911308,
+          "this_run": 904842,
           "baseline": 893516
         }
       }
